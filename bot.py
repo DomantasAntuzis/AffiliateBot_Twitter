@@ -9,8 +9,8 @@ import json
 import requests
 import time
 
-# get_products();
-# scrape_steamdb();
+get_products();
+scrape_steamdb();
 find_deals();
 
 # def post_tweet():
