@@ -5,11 +5,6 @@ from selenium.webdriver.support.ui import Select
 import time
 import csv
 
-# --- Setup Selenium Chrome WebDriver ---
-# Make sure you have installed:
-# pip install selenium
-# Download ChromeDriver from https://chromedriver.chromium.org/downloads and put it in your PATH
-
 def scrape_steamdb():
     url = "https://steamdb.info/stats/globaltopsellers/?cc=us"
 
@@ -25,7 +20,7 @@ def scrape_steamdb():
     # Start the browser
     with webdriver.Chrome(options=chrome_options) as driver:
         driver.get(url)
-        time.sleep(3)  # Wait for page to load (increase if needed)
+        time.sleep(10)  # Wait for page to load (increase if needed)
 
         # Select 5000 from the select field
         try:

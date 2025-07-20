@@ -56,7 +56,7 @@ def get_products():
         for df in data_files:
             print(f" - {df}")
         
-        # Create organized CSV in csv_data directory combining all files
+        # Create organized CSV in csv_data directory combining all files  
         fields = ["PROGRAM_NAME", "ID", "TITLE",  "LINK", "IMAGE_LINK", "AVAILABILITY", "PRICE", "SALE_PRICE"]
         organized_csv = os.path.join(csv_dir, "products_info.csv")
         
