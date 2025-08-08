@@ -1,6 +1,9 @@
-from scrapeSteamdb import scrape_steamdb
+# from scrapeSteamdb import scrape_steamdb
 from getProducts import get_products
 from findDeals import find_deals
+from scrapeSteamdb import scrape_steamdb
+from validateDeals import validate_deals_export
+from scrapeIndieGala import scrape_indiegala
 
 import os
 import tweepy
@@ -11,7 +14,9 @@ import time
 
 # get_products();
 # scrape_steamdb();
-# find_deals();
+# deals = find_deals();
+# validate_deals_export(deals);
+# scrape_indiegala();
 
 def post_tweet(deal):
 			
@@ -70,7 +75,7 @@ def post_tweet(deal):
 		deal_source = "GOG"
 
 	# Post a tweet
-	tweet = f"[{deal_source}] {deal_title} - {deal_discount} OFF!\nNow ${deal_salePrice}.\n{deal_link}\n\n#PCGaming #GameDeals #{deal_source}"
+	tweet = f"[{deal_source}] {deal_title} - {deal_discount}% OFF!\nNow {deal_salePrice}\n{deal_link}\n\n#PCGaming #GameDeals #{deal_source}"
 	try:
 		response = client.create_tweet(text=tweet, media_ids=[media.media_id])
 	except Exception as e:
@@ -83,13 +88,12 @@ def post_tweet(deal):
 	print(f"posted {deal_title} {deal_source} time:", response)
 	# time.sleep(60*60*24)
 
-# test_json = {
-#         "source": "YUPLAY",
-#         "title": "Age of Empires IV: Anniversary Edition",
-#         "link": "https://www.kqzyfj.com/click-101471996-15862927?url=https%3A%2F%2Fwww.yuplay.com%2Fproduct%2Fage-of-empires-iv-anniversary-edition%2F%3Fpartner%3Dcj%3Fpartner%3D%7B%7B+invite_code+%7D%7D",
-#         "image_link": "https://www.yuplay.com/media/products/age-of-empires-iv-anniversary-edition/616/5d851fa0b66cab235cd73ba0ce852afa5d943c49.jpg",
-#         "discount": "67",
-#         "salePrice": 15.59
+# test_json =   {
+#         "source": "IndieGala",
+#         "title": "Frosthaven",
+#         "discount": 10,
+#         "salePrice": "$35.99",
+#         "link": "https://www.indiegala.com/store/game/frosthaven/2347080?ref=mzvkywq",
+#         "image_link": "https://www.indiegalacdn.com/store-img_game/games/medium/2347080.jpg"
 #     }
-
 # post_tweet(test_json)
