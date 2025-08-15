@@ -115,6 +115,5 @@ def scrape_indiegala():
 	with open(valid_deals, "w", encoding="utf-8") as f:
 		json.dump(valid_deals_list, f, indent=4, ensure_ascii=False)
 
-	IndieGala = "IndieGala.json"
-	with open(IndieGala, "w", encoding="utf-8") as f:
-		json.dump(gameDeals, f, indent=4, ensure_ascii=False)
+if __name__ == "__main__":
+	scrape_indiegala()
