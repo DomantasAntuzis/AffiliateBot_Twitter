@@ -20,7 +20,7 @@ def scrape_steamdb():
     # Start the browser
     with webdriver.Chrome(options=chrome_options) as driver:
         driver.get(url)
-        time.sleep(10)  # Wait for page to load (increase if needed)
+        time.sleep(5)  # Wait for page to load (increase if needed)
 
         # Select 5000 from the select field
         try:

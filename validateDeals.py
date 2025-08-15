@@ -36,6 +36,7 @@ def validate_deals(deal, driver):
 		
 		#Skip validating same source same name deals
 		skip_GOG_dupes = []
+		skip_GamersGate_dupes = []
 		skip_YUPLAY_dupes = []
 
 		if deal_source == "GOG.COM INT" and deal_title not in skip_GOG_dupes:
@@ -63,43 +64,99 @@ def validate_deals(deal, driver):
 				print("INVALID: Not cheaper than Steam")
 				return None  # Invalid
 				
-		elif deal_source == "YUPLAY" and deal_title not in skip_YUPLAY_dupes:
+		elif deal_source == "GamersGate.com":
 			wait = WebDriverWait(driver, 5)
+
+			try:
+			# 1. Click the age dropdown
+				dropdown_year = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.select[data-name="age_year"]')))
+				dropdown_year.click()
+
+				year_option = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.select[data-name="age_year"] a[data-value="2003"]')))
+				year_option.click()
+
+				# 2. Click the month dropdown
+				dropdown_month = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.select[data-name="age_month"]')))
+				dropdown_month.click()
+
+				month_option = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.select[data-name="age_month"] a[data-value="1"]')))
+				month_option.click()
+
+				#3. Click the day dropdown
+				dropdown_day = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.select[data-name="age_day"]')))
+				dropdown_day.click()
+
+				day_option = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.select[data-name="age_day"] a[data-value="1"]')))
+				day_option.click()
+
+				#4. Click the submit button
+				submit_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]')))
+				submit_button.click()
+			except Exception as e:
+				print(f"ERROR: {e}")
+		
+			discount_element = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "catalog-item--discount-value")))
+			discount = int(discount_element.text.strip().replace('%', '').replace('-', ''))
 			
-			product_container = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "product-second-container")))
-			discount_element = product_container.find_element(By.CLASS_NAME, "catalog-item-discount-label")
-			discounted_price = product_container.find_element(By.CLASS_NAME, "catalog-item-sale-price")
+			discounted_price_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".catalog-item--price span")))
+			discounted_price_text = driver.execute_script("return arguments[0].textContent;", discounted_price_element).strip()
+			price_numeric_text = discounted_price_text.replace('$', '').replace(',', '').strip()
+			discounted_price = float(price_numeric_text)
+			
+			image_src = driver.find_element(By.CSS_SELECTOR, "div.catalog-item--image img").get_attribute("src")
 
-			if discount_element and discounted_price:
-				discount_span = discount_element.find_elements(By.TAG_NAME, "span")
-				
-				if discount_span:
-					discount = driver.execute_script("return arguments[0].textContent;", discount_span[0]).strip()
-					discount_int = int(discount)
-					price = driver.execute_script("return arguments[0].textContent;", discounted_price).replace('$', '').replace(',', '').strip()
-					priceFloat = float(price)
-
-					print(f"YUPLAY: {discount_int}% off - ${priceFloat:.2f}")
-					cheaper = comparePrices(deal_title, priceFloat)
-
-					if discount_int > 0 and priceFloat and cheaper:
-						deal["discount"] = discount_int
-						deal["salePrice"] = f"${priceFloat:.2f}"
-						skip_YUPLAY_dupes.append(deal_title)
-						print("VALID DEAL")
-						return deal  # Return modified deal
-					else:
-						print("INVALID: Not cheaper than Steam")
-						skip_YUPLAY_dupes.append(deal_title)
-						return None  # Invalid
-				else:
-					print("INVALID: No discount found")
-					skip_YUPLAY_dupes.append(deal_title)
-					return None  # Invalid
+			print(f"GamersGate: {discount}% off - ${discounted_price:.2f}")
+			cheaper = comparePrices(deal_title, discounted_price)
+			
+			if discount > 0 and discounted_price and cheaper:
+				deal["discount"] = discount
+				deal["salePrice"] = f"${discounted_price:.2f}"
+				deal["image_link"] = image_src
+				skip_GamersGate_dupes.append(deal_title)
+				print("VALID DEAL")
+				return deal  # Return modified deal
 			else:
-				print("INVALID: Price elements not found")
-				skip_YUPLAY_dupes.append(deal_title)
-				return None
+				skip_GamersGate_dupes.append(deal_title)
+				print("INVALID: Not cheaper than Steam")
+				return None  # Invalid
+
+		# elif deal_source == "YUPLAY" and deal_title not in skip_YUPLAY_dupes:
+		# 	wait = WebDriverWait(driver, 5)
+			
+		# 	product_container = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "product-second-container")))
+		# 	discount_element = product_container.find_element(By.CLASS_NAME, "catalog-item-discount-label")
+		# 	discounted_price = product_container.find_element(By.CLASS_NAME, "catalog-item-sale-price")
+
+		# 	if discount_element and discounted_price:
+		# 		discount_span = discount_element.find_elements(By.TAG_NAME, "span")
+				
+		# 		if discount_span:
+		# 			discount = driver.execute_script("return arguments[0].textContent;", discount_span[0]).strip()
+		# 			discount_int = int(discount)
+		# 			price = driver.execute_script("return arguments[0].textContent;", discounted_price).replace('$', '').replace(',', '').strip()
+		# 			priceFloat = float(price)
+
+		# 			print(f"YUPLAY: {discount_int}% off - ${priceFloat:.2f}")
+		# 			cheaper = comparePrices(deal_title, priceFloat)
+
+		# 			if discount_int > 0 and priceFloat and cheaper:
+		# 				deal["discount"] = discount_int
+		# 				deal["salePrice"] = f"${priceFloat:.2f}"
+		# 				skip_YUPLAY_dupes.append(deal_title)
+		# 				print("VALID DEAL")
+		# 				return deal  # Return modified deal
+		# 			else:
+		# 				print("INVALID: Not cheaper than Steam")
+		# 				skip_YUPLAY_dupes.append(deal_title)
+		# 				return None  # Invalid
+		# 		else:
+		# 			print("INVALID: No discount found")
+		# 			skip_YUPLAY_dupes.append(deal_title)
+		# 			return None  # Invalid
+		# 	else:
+		# 		print("INVALID: Price elements not found")
+		# 		skip_YUPLAY_dupes.append(deal_title)
+		# 		return None
 		else:
 			print("INVALID: Unsupported source")
 			return None	
@@ -149,7 +206,6 @@ def validate_deals_export(deals):
 	driver = webdriver.Chrome(options=chrome_options)
 
 	try:
-		# Process all deals using the same browser
 		deals_data = list(deals)
 
 		with open("posted_games.txt", encoding="utf-8") as f:
@@ -158,7 +214,7 @@ def validate_deals_export(deals):
 		valid_deals = []  # Store valid deals
 
 		for deal in deals_data:
-			print(f"deal: {deal['title']}")
+			print(f"deal: {deal['title']}, deal link: {deal['link']}")
 			if deal["title"] in posted_games_list:
 				print(f"skipping {deal['title']} because it's already posted")
 				continue
@@ -206,4 +262,3 @@ def validate_deals_export(deals):
 
 		# Close browser only at the very end
 		driver.quit()
-

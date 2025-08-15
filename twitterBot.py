@@ -74,6 +74,9 @@ def post_tweet(deal):
 	if deal_source == "GOG.COM INT":
 		deal_source = "GOG"
 
+	if deal_source == "GamersGate.com":
+		deal_source = "GamersGate"
+
 	# Post a tweet
 	tweet = f"[{deal_source}] {deal_title} - {deal_discount}% OFF!\nNow {deal_salePrice}\n{deal_link}\n\n#PCGaming #GameDeals #{deal_source}"
 	try:
