@@ -9,6 +9,8 @@ def scrape_steamdb():
     url = "https://steamdb.info/stats/globaltopsellers/?cc=us"
 
     chrome_options = Options()
+
+    #headless 
     chrome_options.add_argument("--headful")  # Show browser window
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")

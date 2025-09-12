@@ -85,8 +85,29 @@ def post_tweet(deal):
 		print(f"Error posting tweet: {e}")
 		return None
 
-	with open("posted_games.txt", "a") as f:
-		f.write(f"{deal_title}\n")
+	# Maintain a rolling list of 60 posted game titles
+	posted_games_path = "posted_games.txt"
+	try:
+		# Read all posted titles (if file exists)
+		if os.path.exists(posted_games_path):
+			with open(posted_games_path, "r", encoding="utf-8") as f:
+				posted_titles = f.read().splitlines()
+		else:
+			posted_titles = []
+		
+		# Add the new title
+		posted_titles.append(deal_title)
+		
+		# If more than 60, remove oldest
+		if len(posted_titles) > 60:
+			posted_titles = posted_titles[-60:]
+		
+		# Write back the updated list
+		with open(posted_games_path, "w", encoding="utf-8") as f:
+			for title in posted_titles:
+				f.write(f"{title}\n")
+	except Exception as e:
+		print(f"Error updating posted_games.txt: {e}")
 
 	print(f"posted {deal_title} {deal_source} time:", response)
 	# time.sleep(60*60*24)
