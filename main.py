@@ -4,6 +4,7 @@ from scrapeSteamdb import scrape_steamdb
 from validateDeals import validate_deals_export
 from twitterBot import post_tweet
 from scrapeIndieGala import scrape_indiegala
+import datetime
 
 import schedule
 import time
@@ -11,12 +12,17 @@ import random
 import json
 
 def daily():
-
+	
+	start_time = time.time()
 	get_products();
 	scrape_steamdb();
 	deals = find_deals();
 	validate_deals_export(deals);
 	scrape_indiegala();
+	end_time = time.time()
+	
+	elapsed_time = end_time - start_time
+	print(f"Data collection and validation completed in {elapsed_time:.2f} seconds")
 
 	with open("valid_deals.json", "r") as f:
 		deals = json.load(f)
@@ -37,37 +43,47 @@ def daily():
 
 			#handle picking deal that hasnt been posted yet
 			while True:
+				if not deals:
+					raise RuntimeError("No deals left to post")
+
 				rng = random.randint(0, len(deals) - 1)
 				print(rng)
+
+				if not deals[rng]:
+					del deals[rng]
+					continue
+
 				deal = deals[rng][0]
 
 				if deal["title"] in posted_games_list or deal["discount"] <= 10:
-					deals[rng].remove(deal)
+					deals[rng].pop(0)
 					#remove empty list from deals
-					if deals[rng] == []:
-						deals.remove(deals[rng])
+					if not deals[rng]:
+						del deals[rng]
 					continue
 				else:
 					break
 
-			print(deal)
-
 			post_tweet(deal)
 
-
+			deals[rng].pop(0)
+			if not deals[rng]:
+				del deals[rng]
 
 		except Exception as e:
 			print(e)
 			continue
 
 		post_count += 1
-		if post_count == 4:
+		if post_count == 6:
 			break
 		
-		time.sleep(5*60*60)
+		time.sleep(4*60*60)
 
 #set for next day to 17:00 ; 4 posts ; 3.5 hours between them
-schedule.every().day.at("10:30").do(daily)
+now = datetime.datetime.now() + datetime.timedelta(minutes=2)
+run_time = now.strftime("%H:%M")
+schedule.every().day.at(run_time).do(daily)
 
 print("🚀 Bot started! Waiting for scheduled tasks...")
 print("📅 Daily job scheduled for 00:00 (midnight)")

@@ -11,7 +11,8 @@ def get_products():
     password = "xTt$LErv"
 
     # Actual file path from your email
-    file_path = "/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-20250814.zip"
+    today_str = datetime.now().strftime("%Y%m%d")
+    file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-20250911.zip"
 
     url = url_base + file_path
 
