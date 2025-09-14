@@ -1,6 +1,7 @@
 from getProducts import get_products
 from findDeals import find_deals
-from scrapeSteamdb import scrape_steamdb
+# from scrapeSteamdb import scrape_steamdb
+from getSteamTopsellers import scrape_steam_topsellers
 from validateDeals import validate_deals_export
 from twitterBot import post_tweet
 from scrapeIndieGala import scrape_indiegala
@@ -15,7 +16,7 @@ def daily():
 	
 	start_time = time.time()
 	get_products();
-	scrape_steamdb();
+	scrape_steam_topsellers();
 	deals = find_deals();
 	validate_deals_export(deals);
 	scrape_indiegala();

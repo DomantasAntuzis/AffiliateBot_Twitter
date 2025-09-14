@@ -12,7 +12,7 @@ def get_products():
 
     # Actual file path from your email
     today_str = datetime.now().strftime("%Y%m%d")
-    file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-20250911.zip"
+    file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-{today_str}.zip"
 
     url = url_base + file_path
 

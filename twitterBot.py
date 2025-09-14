@@ -1,7 +1,6 @@
-# from scrapeSteamdb import scrape_steamdb
 from getProducts import get_products
 from findDeals import find_deals
-from scrapeSteamdb import scrape_steamdb
+# from scrapeSteamdb import scrape_steamdb
 from validateDeals import validate_deals_export
 from scrapeIndieGala import scrape_indiegala
 
