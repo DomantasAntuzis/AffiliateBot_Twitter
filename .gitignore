@@ -8,3 +8,6 @@ thoughts.txt
 valid_deals.json
 shuffled_deals.json
 test.py
+data/
+filter_out_junk.py
+logs/
