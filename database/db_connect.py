@@ -28,7 +28,6 @@ def get_connection():
         )
         
         if connection.is_connected():
-            logger.info(f"Successfully connected to MySQL database: {config.DB_NAME}")
             return connection
             
     except Error as e:
@@ -44,9 +43,8 @@ def close_connection(connection):
     """
     if connection and connection.is_connected():
         connection.close()
-        logger.info("MySQL connection closed")
 
-def execute_query(query, params=None, fetch=False):
+def execute_query(query, params=None, fetch=False, connection=None):
     """
     Execute a SQL query
     
@@ -54,14 +52,15 @@ def execute_query(query, params=None, fetch=False):
         query: SQL query string
         params: Query parameters (tuple)
         fetch: Whether to fetch results (default: False)
+        connection: Database connection (required)
     
     Returns:
         Results if fetch=True, rowcount if fetch=False
     """
-    connection = get_connection()
-    if not connection:
+    if connection is None:
+        logger.error("Connection parameter is required")
         return None
-    
+
     try:
         cursor = connection.cursor()
         cursor.execute(query, params or ())
@@ -69,17 +68,15 @@ def execute_query(query, params=None, fetch=False):
         if fetch:
             results = cursor.fetchall()
             cursor.close()
-            close_connection(connection)
             return results
         else:
-            connection.commit()
             rowcount = cursor.rowcount
             cursor.close()
-            close_connection(connection)
             return rowcount
             
     except Error as e:
         logger.error(f"Error executing query: {e}")
-        close_connection(connection)
+        if 'cursor' in locals():
+            cursor.close()
         return None
 

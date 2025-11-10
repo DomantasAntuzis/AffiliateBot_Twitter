@@ -1,13 +1,7 @@
-csv_data/
 game_images/
 product_files/
 __pycache__/
-deals.json
 posted_games.txt
-thoughts.txt
-valid_deals.json
-shuffled_deals.json
-test.py
+test/
 data/
-filter_out_junk.py
 logs/

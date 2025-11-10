@@ -16,11 +16,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from utils.logger import logger
 from utils.helpers import load_json_file, save_json_file, load_posted_games
-from services.affiliate_service import fetch_cj_products
+from services.affiliate_service import fetch_all_affiliate_products
 from services.steam_service import fetch_steam_topsellers
-from services.deals_service import find_matching_deals, scrape_indiegala_deals
+from services.deals_service import find_matching_deals
 from services.validation_service import validate_deals_batch
 from services.twitter_service import post_deal_to_twitter
+# from services.igdb_data_service import fetch_all_genres, fetch_all_igdb_games
 
 def daily_data_collection():
     """
@@ -34,35 +35,31 @@ def daily_data_collection():
     start_time = time.time()
     
     try:
-        # Step 1: Fetch CJ Affiliate products
-        logger.info("Step 1/5: Fetching CJ Affiliate products...")
-        if not fetch_cj_products():
-            logger.error("Failed to fetch CJ products")
+        # Step 1: Fetch all affiliate products (CJ + IndieGala)
+        logger.info("Step 1/4: Fetching all affiliate products (CJ + IndieGala)...")
+        if not fetch_all_affiliate_products():
+            logger.error("Failed to fetch affiliate products")
             return
         
         # Step 2: Fetch Steam top sellers
-        logger.info("Step 2/5: Fetching Steam top sellers...")
+        logger.info("Step 2/4: Fetching Steam top sellers...")
         if not fetch_steam_topsellers():
             logger.error("Failed to fetch Steam top sellers")
             return
         
         # Step 3: Find matching deals
-        logger.info("Step 3/5: Finding matching deals...")
+        logger.info("Step 3/4: Finding matching deals...")
         deals = find_matching_deals()
         if not deals:
             logger.warning("No matching deals found")
             return
         
         # Step 4: Validate deals
-        logger.info("Step 4/5: Validating deals...")
+        logger.info("Step 4/4: Validating deals...")
         valid_deals = validate_deals_batch(deals)
         if not valid_deals:
             logger.warning("No valid deals after validation")
             return
-        
-        # Step 5: Scrape IndieGala
-        logger.info("Step 5/5: Scraping IndieGala...")
-        scrape_indiegala_deals()
         
         end_time = time.time()
         elapsed_time = end_time - start_time
@@ -86,18 +83,31 @@ def _shuffle_deals():
         # Load valid deals
         deals = load_json_file(config.VALID_DEALS_JSON)
         
-        # Shuffle each group
+        # Load posted games to filter them out
+        posted_games_list = load_posted_games(config.POSTED_GAMES_FILE)
+        
+        # Filter out already-posted games from each group
+        filtered_deals = []
         for group in deals:
+            filtered_group = [
+                deal for deal in group 
+                if deal["title"] not in posted_games_list
+            ]
+            if filtered_group:  # Only add non-empty groups
+                filtered_deals.append(filtered_group)
+        
+        # Shuffle each remaining group
+        for group in filtered_deals:
             random.shuffle(group)
         
-        # Save shuffled deals
-        save_json_file(config.SHUFFLED_DEALS_JSON, deals)
+        # Save shuffled deals (without posted games)
+        save_json_file(config.SHUFFLED_DEALS_JSON, filtered_deals)
         
-        logger.info("Deals shuffled and saved")
+        logger.info(f"Deals shuffled and saved. Filtered out {len(posted_games_list)} already-posted games.")
         
     except Exception as e:
         logger.error(f"Error shuffling deals: {e}")
-
+        
 def _post_tweets_batch():
     """Post a batch of tweets (6 tweets, 4 hours apart)"""
     logger.info("Starting tweet posting batch")
@@ -191,6 +201,47 @@ def _select_unposted_deal(deals, posted_games_list):
     logger.warning(f"Could not find valid deal after {max_attempts} attempts")
     return None
 
+# def monthly_igdb_data_collection():
+    """
+    Monthly job: Fetch all genres and games from IGDB API
+    Runs once per month at scheduled time
+    """
+    logger.info("="*60)
+    logger.info("Starting monthly IGDB data collection")
+    logger.info("="*60)
+    
+    start_time = time.time()
+    
+    try:
+        # Step 1: Fetch all genres
+        logger.info("Step 1/2: Fetching all genres from IGDB...")
+        fetch_all_genres()
+        logger.info("Genres fetch completed")
+        
+        # Step 2: Fetch all games
+        # logger.info("Step 2/2: Fetching all games from IGDB...")
+        # fetch_all_igdb_games()
+        # logger.info("Games fetch completed")
+        
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        
+        logger.info("="*60)
+        logger.info(f"Monthly IGDB data collection completed in {elapsed_time:.2f} seconds")
+        logger.info("="*60)
+        
+    except Exception as e:
+        logger.error(f"Error in monthly IGDB data collection: {e}", exc_info=True)
+
+# def _check_and_run_monthly_igdb():
+    """
+    Wrapper function to check if it's the first day of the month
+    and run monthly IGDB data collection if needed
+    """
+    today = datetime.datetime.now()
+    if today.day == 1:
+        monthly_igdb_data_collection()
+
 def setup_scheduler():
     """
     Setup and configure the scheduler
@@ -198,19 +249,19 @@ def setup_scheduler():
     Returns:
         None
     """
-    # Schedule daily job
-    # For testing: run 2 minutes from now
-    # For production: set to specific time like "00:00" for midnight
-    
+   
     now = datetime.datetime.now() + datetime.timedelta(minutes=2)
     run_time = now.strftime("%H:%M")
     
     schedule.every().day.at(run_time).do(daily_data_collection)
     
+    # schedule.every().day.at("02:00").do(_check_and_run_monthly_igdb).tag("monthly_igdb")
+    
     logger.info("="*60)
-    logger.info("🚀 Scheduler initialized!")
-    logger.info(f"📅 Daily job scheduled for {run_time}")
-    logger.info(f"⏰ Next run: {schedule.next_run()}")
+    logger.info("Scheduler initialized!")
+    logger.info(f"Daily job scheduled for {run_time}")
+    logger.info("Monthly IGDB data collection scheduled for 1st of each month at 02:00")
+    logger.info(f"Next daily run: {schedule.next_run()}")
     logger.info("="*60)
 
 def run_scheduler():

@@ -11,6 +11,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
+from database.db_connect import get_connection, close_connection, execute_query
 from utils.logger import logger
 from utils.helpers import add_posted_game
 

@@ -145,6 +145,12 @@ def _validate_deal(deal, driver, steam_games):
     deal_source = deal["source"]
     
     try:
+        # IndieGala doesn't need web scraping - data already in CSV
+        if deal_source == "IndieGala":
+            logger.info(f"{deal_source}: {deal_title}")
+            return _validate_indiegala_deal(deal, steam_games)
+        
+        # Other sources need to visit the website
         driver.get(deal_link)
         logger.info(f"{deal_source}: {deal_title} - {deal_link}")
         
@@ -272,6 +278,60 @@ def _validate_yuplay_deal(deal, driver, steam_games):
         
     except Exception as e:
         logger.error(f"Error validating YUPLAY deal: {e}")
+        return None
+
+def _validate_indiegala_deal(deal, steam_games):
+    """Validate IndieGala deal - Only compare existing deal price with Steam price, no scraping."""
+    try:
+        # Extract price from deal
+        discounted_price = 0
+        discount = 0
+
+        # Prefer "salePrice", fallback to "PRICE"
+        if "SALE_PRICE" in deal:
+            try:
+                price_str = str(deal["SALE_PRICE"]).replace("$", "").replace(",", "").replace(" ", "").strip()
+                discounted_price = float(price_str) if price_str else 0
+            except Exception:
+                discounted_price = 0
+
+        if discounted_price == 0 and "PRICE" in deal:
+            try:
+                price_str = str(deal["PRICE"]).replace("$", "").replace(",", "").replace(" ", "").strip()
+                discounted_price = float(price_str) if price_str else 0
+            except Exception:
+                discounted_price = 0
+
+        # Extract discount if present (check both uppercase DISCOUNT from CSV and lowercase discount)
+        if "DISCOUNT" in deal and deal["DISCOUNT"]:
+            try:
+                discount = int(str(deal["DISCOUNT"]).strip())
+            except Exception:
+                discount = 0
+        elif "discount" in deal:
+            try:
+                discount = int(deal["discount"])
+            except Exception:
+                discount = 0
+
+        # If not present, discount can be 0 or not used
+        if discounted_price > 0:
+            logger.info(f"IndieGala: {discount}% off - ${discounted_price:.2f}")
+            if _compare_prices(deal["title"], discounted_price, steam_games):
+                if discount > 0:
+                    deal["discount"] = discount
+                deal["salePrice"] = f"${discounted_price:.2f}"
+                logger.info("VALID - Cheaper than Steam")
+                return deal
+            else:
+                logger.info("INVALID - Not cheaper than Steam")
+                return None
+
+        logger.warning("Could not extract price from IndieGala deal")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error validating IndieGala deal: {e}")
         return None
 
 def _handle_gamersgate_age_verification(driver):
