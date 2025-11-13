@@ -35,6 +35,7 @@ TEMP_DIR = "product_files"
 # CSV files
 PRODUCTS_CSV = os.path.join(CSV_DIR, "products_info.csv")
 STEAMDB_CSV = os.path.join(CSV_DIR, "steamdb_results.csv")
+MISSING_TITLES_CSV = os.path.join(CSV_DIR, "missing_game_titles.csv")
 
 # JSON files
 VALID_DEALS_JSON = os.path.join(JSON_DIR, "valid_deals.json")
