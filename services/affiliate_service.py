@@ -36,31 +36,23 @@ def fetch_all_affiliate_products():
     Returns:
         bool: True if successful, False otherwise
     """
-    logger.info("Starting affiliate product collection (CJ + IndieGala)")
-    
     # Step 1: Fetch CJ Affiliate data files
-    logger.info("Step 1/3: Fetching CJ Affiliate products...")
     cj_data_files = _fetch_cj_data_files()
     if cj_data_files is None:
         logger.error("Failed to fetch CJ products")
         return False
     
     # Step 2: Fetch IndieGala products
-    logger.info("Step 2/3: Fetching IndieGala products...")
     indiegala_products = _fetch_indiegala_data()
     if indiegala_products is None:
-        logger.warning("Failed to fetch IndieGala products, continuing with CJ products only")
         indiegala_products = []
     
     # Step 3: Process all data and write to CSV
-    logger.info("Step 3/3: Processing and writing all products to CSV...")
     success = _process_csv_files(cj_data_files, indiegala_products)
     
     # Cleanup temporary files
     _cleanup_temp_files()
     
-    if success:
-        logger.info("Affiliate product collection completed successfully")
     return success
 
 def get_affiliate_products_from_csv():
@@ -99,8 +91,6 @@ def _fetch_cj_data_files():
     Returns:
         list: List of extracted CSV/TXT file paths, or None if failed
     """
-    logger.info("Starting CJ Affiliate product fetch")
-    
     # CJ HTTP credentials
     url_base = "https://datatransfer.cj.com"
     username = config.CJ_HTTP_USERNAME
@@ -110,37 +100,34 @@ def _fetch_cj_data_files():
         logger.error("CJ credentials not found in environment variables")
         return None
     
-    # File path (update date as needed)
     today_str = datetime.now().strftime("%Y%m%d")
-    file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-{today_str}.zip"
+    # file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-{today_str}.zip"
+    file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-20251115.zip"
     url = url_base + file_path
     
     # Create directories
     os.makedirs(config.TEMP_DIR, exist_ok=True)
     os.makedirs(config.CSV_DIR, exist_ok=True)
     
-    logger.info(f"Fetching: {url}")
-    
     try:
         # Download file
         response = requests.get(url, auth=(username, password))
         
         if response.status_code != 200:
-            logger.error(f"Failed to download. Status: {response.status_code}")
+            logger.error(f"Failed to download CJ products. Status: {response.status_code}")
             return None
         
         # Save ZIP file
         out_file = os.path.join(config.TEMP_DIR, os.path.basename(file_path))
         with open(out_file, "wb") as f:
             f.write(response.content)
-        logger.info(f"Downloaded and saved as {out_file}")
         
         # Extract ZIP file
         data_files = _extract_zip_file(out_file)
         if not data_files:
             return None
         
-        logger.info(f"CJ Affiliate: Found {len(data_files)} data files")
+        logger.info(f"CJ Affiliate: Fetched {len(data_files)} data files")
         return data_files
         
     except Exception as e:
@@ -160,7 +147,6 @@ def _extract_zip_file(zip_path):
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(config.TEMP_DIR)
-            logger.info(f"Extracted {len(zip_ref.namelist())} files")
     except zipfile.BadZipFile:
         logger.error("The downloaded file is not a valid zip archive")
         return []
@@ -177,7 +163,6 @@ def _extract_zip_file(zip_path):
         logger.error("No CSV or TXT files found in extracted archive")
         return []
     
-    logger.info(f"Found {len(data_files)} data files to process")
     return data_files
 
 
@@ -193,8 +178,6 @@ def _fetch_indiegala_data():
     Returns:
         list: List of product dictionaries, or None if failed
     """
-    logger.info("Starting IndieGala product scraping")
-    
     url = "https://www.indiegala.com/store/games/on-sale"
     
     chrome_options = Options()
@@ -313,7 +296,6 @@ def _fetch_indiegala_data():
                         continue
                 
                 if next_button and next_button.is_displayed():
-                    logger.info(f"Scraping page {next_nr} (found {len(game_products)} products so far)")
                     driver.execute_script("arguments[0].click();", next_button)
                     next_nr += 1
                     consecutive_failures = 0
@@ -332,7 +314,6 @@ def _fetch_indiegala_data():
                             logger.warning(f"Too many consecutive failures ({consecutive_failures}), stopping pagination")
                             break
                 else:
-                    logger.info(f"No more pages found (checked up to page {next_nr-1})")
                     break
             except Exception as e:
                 consecutive_failures += 1
@@ -349,7 +330,7 @@ def _fetch_indiegala_data():
     finally:
         driver.quit()
     
-    logger.info(f"IndieGala: Scraped {len(game_products)} unique products (skipped {duplicate_count} duplicates)")
+    logger.info(f"IndieGala: Fetched {len(game_products)} products")
     return game_products
 
 
@@ -386,9 +367,6 @@ def _process_csv_files(cj_data_files, indiegala_products=None):
             
             # Process CJ Affiliate CSV files
             for data_file in cj_data_files:
-                logger.info(f"Processing CJ file: {os.path.basename(data_file)}")
-                file_rows = 0
-                
                 try:
                     with open(data_file, newline='', encoding="utf-8") as infile:
                         reader = csv.DictReader(infile)
@@ -408,20 +386,16 @@ def _process_csv_files(cj_data_files, indiegala_products=None):
                                 out_row["DISCOUNT"] = ""
                             
                             writer.writerow(out_row)
-                            file_rows += 1
                             total_rows += 1
                             
                             # Store row data for database insertion
                             all_rows_data.append(out_row)
-                    
-                    logger.info(f"Processed {file_rows} rows from {os.path.basename(data_file)}")
                     
                 except Exception as e:
                     logger.error(f"Error processing {data_file}: {e}")
             
             # Process IndieGala products
             if indiegala_products:
-                logger.info(f"Writing {len(indiegala_products)} IndieGala products...")
                 for product in indiegala_products:
                     # Clean product data
                     out_row = {
@@ -437,11 +411,8 @@ def _process_csv_files(cj_data_files, indiegala_products=None):
                     
                     # Store row data for database insertion
                     all_rows_data.append(out_row)
-                
-                logger.info(f"Written {len(indiegala_products)} IndieGala products")
         
-        logger.info(f"Combined CSV written to: {config.PRODUCTS_CSV}")
-        logger.info(f"Total rows: {total_rows} (CJ: {total_rows - len(indiegala_products)}, IndieGala: {len(indiegala_products)})")
+        logger.info(f"Processed {total_rows} products ({total_rows - len(indiegala_products)} CJ, {len(indiegala_products)} IndieGala)")
         
         # Now process database inserts
         if not all_rows_data:
@@ -454,8 +425,6 @@ def _process_csv_files(cj_data_files, indiegala_products=None):
         
     except Exception as e:
         logger.error(f"Error creating combined CSV: {e}")
-        import traceback
-        traceback.print_exc()
         if 'db_connection' in locals():
             close_connection(db_connection)
         return False
@@ -468,10 +437,7 @@ def _insert_offers_to_database(db_connection, all_rows_data):
         db_connection: Database connection object
         all_rows_data: List of row dictionaries from CSV
     """
-    logger.info(f"Preparing database inserts for {len(all_rows_data)} products...")
-    
-    # Step 1: Collect unique titles and program names for batch lookup
-    logger.info("Collecting unique titles and program names...")
+    # Collect unique titles and program names for batch lookup
     unique_titles = set()
     unique_program_names = set()
     
@@ -483,18 +449,14 @@ def _insert_offers_to_database(db_connection, all_rows_data):
         if program_name:
             unique_program_names.add(program_name)
     
-    logger.info(f"Found {len(unique_titles)} unique titles and {len(unique_program_names)} unique program names")
-    
-    # Step 2: Batch lookup all item_ids at once (case-insensitive)
+    # Batch lookup all item_ids and distributor_ids
     item_id_map = _batch_lookup_item_ids(db_connection, unique_titles)
-    
-    # Step 3: Batch lookup all distributor_ids at once
     distributor_id_map = _batch_lookup_distributor_ids(db_connection, unique_program_names)
     
-    # Step 4: Process rows and prepare query values
+    # Process rows and prepare query values
     query_values, stats = _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map)
     
-    # Step 5: Batch insert into database
+    # Batch insert into database
     if query_values:
         _execute_batch_insert(db_connection, query_values, stats)
     else:
@@ -512,7 +474,6 @@ def _batch_lookup_item_ids(db_connection, unique_titles):
     Returns:
         dict: Mapping of title -> item_id
     """
-    logger.info(f"Batch looking up {len(unique_titles)} unique items...")
     item_id_map = {}
     normalized_title_map = {}  # Map normalized title -> list of original CSV titles
     
@@ -526,9 +487,6 @@ def _batch_lookup_item_ids(db_connection, unique_titles):
             if normalized not in normalized_title_map:
                 normalized_title_map[normalized] = []
             normalized_title_map[normalized].append(csv_title)
-        
-        # Get all unique normalized titles
-        unique_normalized_titles = list(normalized_title_map.keys())
         
         # Fetch all items from database and normalize them for matching
         cursor = db_connection.cursor(buffered=True)
@@ -545,7 +503,6 @@ def _batch_lookup_item_ids(db_connection, unique_titles):
                 db_normalized_map[normalized_db_title] = item_id
         
         # Match normalized CSV titles with normalized DB titles
-        matches_found = 0
         for normalized_csv, csv_titles in normalized_title_map.items():
             if normalized_csv in db_normalized_map:
                 item_id = db_normalized_map[normalized_csv]
@@ -553,13 +510,9 @@ def _batch_lookup_item_ids(db_connection, unique_titles):
                 for csv_title in csv_titles:
                     if csv_title not in item_id_map:  # Use first match if duplicates
                         item_id_map[csv_title] = item_id
-                        matches_found += 1
         
-        logger.info(f"Found {len(item_id_map)} matching items in database (normalized/fuzzy match)")
     except Exception as e:
         logger.error(f"Error batch looking up items: {e}")
-        import traceback
-        traceback.print_exc()
     
     return item_id_map
 
@@ -574,7 +527,6 @@ def _batch_lookup_distributor_ids(db_connection, unique_program_names):
     Returns:
         dict: Mapping of program_name -> distributor_id
     """
-    logger.info(f"Batch looking up {len(unique_program_names)} unique distributors...")
     distributor_id_map = {}
     
     if not unique_program_names:
@@ -606,11 +558,8 @@ def _batch_lookup_distributor_ids(db_connection, unique_program_names):
             for original_name in original_names:
                 distributor_id_map[original_name] = dist_id
         
-        logger.info(f"Found {len(distributor_id_map)} matching distributors in database")
     except Exception as e:
         logger.error(f"Error batch looking up distributors: {e}")
-        import traceback
-        traceback.print_exc()
     
     return distributor_id_map
 
@@ -626,7 +575,6 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
     Returns:
         tuple: (query_values list, stats dict)
     """
-    logger.info("Processing rows with batch lookup results...")
     query_values = []
     skipped_count = 0
     missing_item_count = 0
@@ -634,14 +582,6 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
     missing_sale_price_count = 0
     price_conversion_failed_count = 0
     missing_essential_data_count = 0
-    
-    # Diagnostic: Track offers with sale_price that are being skipped
-    offers_with_sale_price_but_skipped = {
-        'missing_item': [],
-        'missing_distributor': [],
-        'price_conversion_failed': [],
-        'missing_essential': []
-    }
     
     for row_data in all_rows_data:
         title = row_data.get("TITLE", "").strip()
@@ -651,35 +591,21 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
         list_price = row_data.get("PRICE", "").strip()
         sale_price = row_data.get("SALE_PRICE", "").strip()
         
-        has_sale_price = sale_price and sale_price.strip()
-        
         # Skip if essential data is missing
         if not title or not program_name or not affiliate_url:
             skipped_count += 1
             missing_essential_data_count += 1
-            if has_sale_price:
-                offers_with_sale_price_but_skipped['missing_essential'].append({
-                    'title': title[:50], 'program': program_name, 'reason': 'missing essential data'
-                })
             continue
         
         # Fast dictionary lookup (no query!)
         item_id = item_id_map.get(title)
         if not item_id:
             missing_item_count += 1
-            if has_sale_price:
-                offers_with_sale_price_but_skipped['missing_item'].append({
-                    'title': title[:50], 'program': program_name
-                })
             continue
         
         distributor_id = distributor_id_map.get(program_name)
         if not distributor_id:
             missing_distributor_count += 1
-            if has_sale_price:
-                offers_with_sale_price_but_skipped['missing_distributor'].append({
-                    'title': title[:50], 'program': program_name
-                })
             continue
         
         # Skip if no sale_price (required)
@@ -696,15 +622,11 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
             
             list_price_float = float(list_price_clean) if list_price_clean else None
             sale_price_float = float(sale_price_clean) if sale_price_clean else None
-        except Exception as e:
+        except Exception:
             list_price_float = None
             sale_price_float = None
             price_conversion_failed_count += 1
             skipped_count += 1
-            if has_sale_price:
-                offers_with_sale_price_but_skipped['price_conversion_failed'].append({
-                    'title': title[:50], 'program': program_name, 'sale_price': sale_price[:20], 'error': str(e)[:50]
-                })
             continue
         
         # Skip if sale_price conversion failed or is None
@@ -741,33 +663,21 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
         'missing_essential': missing_essential_data_count
     }
     
-    logger.info(f"Processed {stats['total']} rows: {stats['valid']} valid, {stats['skipped']} skipped")
-    logger.info(f"  Breakdown: {stats['missing_item']} missing items, {stats['missing_distributor']} missing distributors, {stats['missing_sale_price']} missing sale_price, {stats['price_conversion_failed']} price conversion failed, {stats['missing_essential']} missing essential data")
-    
-    # Diagnostic: Log offers with sale_price that were skipped
-    total_with_sale_price_skipped = (
-        len(offers_with_sale_price_but_skipped['missing_item']) +
-        len(offers_with_sale_price_but_skipped['missing_distributor']) +
-        len(offers_with_sale_price_but_skipped['price_conversion_failed']) +
-        len(offers_with_sale_price_but_skipped['missing_essential'])
-    )
-    
-    if total_with_sale_price_skipped > 0:
-        logger.warning(f"DIAGNOSTIC: {total_with_sale_price_skipped} offers with sale_price were skipped:")
-        logger.warning(f"  - {len(offers_with_sale_price_but_skipped['missing_item'])} missing items in database")
-        logger.warning(f"  - {len(offers_with_sale_price_but_skipped['missing_distributor'])} missing distributors")
-        logger.warning(f"  - {len(offers_with_sale_price_but_skipped['price_conversion_failed'])} price conversion failed")
-        logger.warning(f"  - {len(offers_with_sale_price_but_skipped['missing_essential'])} missing essential data")
+    # Write missing game titles to file (only if there are missing items)
+    if missing_item_count > 0:
+        missing_items = []
+        for row_data in all_rows_data:
+            title = row_data.get("TITLE", "").strip()
+            program_name = row_data.get("PROGRAM_NAME", "").strip()
+            sale_price = row_data.get("SALE_PRICE", "").strip()
+            
+            if title and program_name and sale_price:
+                item_id = item_id_map.get(title)
+                if not item_id:
+                    missing_items.append({'title': title, 'program': program_name})
         
-        # Show sample titles that are missing items
-        if offers_with_sale_price_but_skipped['missing_item']:
-            logger.warning(f"  Sample titles missing from database (first 10):")
-            for item in offers_with_sale_price_but_skipped['missing_item'][:10]:
-                logger.warning(f"    - '{item['title']}' from {item['program']}")
-    
-    # Write missing game titles to file
-    if offers_with_sale_price_but_skipped['missing_item']:
-        _write_missing_titles_to_file(offers_with_sale_price_but_skipped['missing_item'])
+        if missing_items:
+            _write_missing_titles_to_file(missing_items)
     
     return query_values, stats
 
@@ -797,15 +707,9 @@ def _execute_batch_insert(db_connection, query_values, stats):
         )
         db_connection.commit()
         cursor.close()
-        logger.info(f"Successfully inserted {len(query_values)} affiliate products into database")
-        
-        total_skipped = stats['skipped'] + stats['missing_item'] + stats['missing_distributor']
-        if total_skipped > 0:
-            logger.info(f"Skipped {total_skipped} products: {stats['skipped']} missing data, {stats['missing_item']} missing items, {stats['missing_distributor']} missing distributors")
+        logger.info(f"Inserted {len(query_values)} offers into database")
     except Exception as e:
         logger.error(f"Error inserting affiliate products into database: {e}")
-        import traceback
-        traceback.print_exc()
         db_connection.rollback()
 
 
@@ -927,28 +831,18 @@ def _write_missing_titles_to_file(missing_items):
                 writer.writerow([title, distributors_str, info['count']])
         
         unique_titles_count = len(title_info)
-        total_occurrences = sum(info['count'] for info in title_info.values())
         
-        logger.info(f"Wrote {unique_titles_count} unique missing game titles to {config.MISSING_TITLES_CSV}")
-        logger.info(f"  Total occurrences: {total_occurrences} (some titles appear multiple times)")
-        logger.info(f"  File location: {os.path.abspath(config.MISSING_TITLES_CSV)}")
+        logger.info(f"Missing titles file created: {unique_titles_count} unique titles")
         
     except Exception as e:
         logger.error(f"Error writing missing titles to file: {e}")
-        import traceback
-        traceback.print_exc()
 
 def _cleanup_temp_files():
     """Clean up temporary files in product_files directory"""
-    logger.info("Cleaning up temporary files...")
-    
     for fname in os.listdir(config.TEMP_DIR):
         fpath = os.path.join(config.TEMP_DIR, fname)
         if os.path.isfile(fpath) and not fname.startswith("."):
             try:
                 os.remove(fpath)
-                logger.debug(f"Deleted: {fname}")
-            except Exception as e:
-                logger.warning(f"Could not delete {fname}: {e}")
-    
-    logger.info("Cleanup complete")
+            except Exception:
+                pass

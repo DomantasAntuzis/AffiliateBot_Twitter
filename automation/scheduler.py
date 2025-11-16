@@ -32,10 +32,9 @@ def daily_data_collection():
     logger.info("Starting daily data collection and validation")
     logger.info("="*60)
     
-    start_time = time.time()
-    
     try:
         # Step 1: Fetch all affiliate products (CJ + IndieGala)
+        start_time = time.time()
         logger.info("Step 1/4: Fetching all affiliate products (CJ + IndieGala)...")
         if not fetch_all_affiliate_products():
             logger.error("Failed to fetch affiliate products")
@@ -75,7 +74,7 @@ def daily_data_collection():
         _post_tweets_batch()
         
     except Exception as e:
-        logger.error(f"Error in daily data collection: {e}", exc_info=True)
+        logger.error(f"Error in daily data collection: {e}")
 
 def _shuffle_deals():
     """Shuffle deals within each source group for random posting"""
@@ -231,7 +230,7 @@ def _select_unposted_deal(deals, posted_games_list):
         logger.info("="*60)
         
     except Exception as e:
-        logger.error(f"Error in monthly IGDB data collection: {e}", exc_info=True)
+        logger.error(f"Error in monthly IGDB data collection: {e}")
 
 # def _check_and_run_monthly_igdb():
     """

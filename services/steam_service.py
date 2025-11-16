@@ -132,7 +132,6 @@ def _fetch_top500_topsellers(cc="US", lang="en"):
         try:
             batch = _fetch_batch(start_pos, 100, cc, lang)
             all_results.extend(batch)
-            logger.info(f"Got {len(batch)} games")
             
             if len(batch) < 100:
                 logger.warning(f"Only {len(batch)} games returned, likely reached end of results")

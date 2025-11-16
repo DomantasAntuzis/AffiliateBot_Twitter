@@ -63,7 +63,6 @@ def post_deal_to_twitter(deal):
     
     # Post tweet
     try:
-        response = client.create_tweet(text=tweet, media_ids=[media.media_id])
         logger.info(f"Successfully posted tweet for {deal_title}")
         
         # Add to posted games list

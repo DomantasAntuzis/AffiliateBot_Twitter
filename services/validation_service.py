@@ -33,8 +33,6 @@ def validate_deals_batch(deals):
     Returns:
         list: List of valid deals (sorted by source)
     """
-    logger.info(f"Starting validation of {len(deals)} deals")
-    
     # Load Steam prices for comparison
     steam_games = _load_steam_prices()
     
@@ -44,7 +42,6 @@ def validate_deals_batch(deals):
     valid_deals = []
     
     # Create browser pool
-    logger.info(f"Initializing {config.BROWSER_POOL_SIZE} persistent browsers...")
     browser_pool = BrowserPool(pool_size=config.BROWSER_POOL_SIZE)
     
     try:
@@ -57,24 +54,16 @@ def validate_deals_batch(deals):
             }
             
             # Collect results as they complete
-            completed = 0
             for future in as_completed(future_to_deal):
-                deal = future_to_deal[future]
-                completed += 1
-                
                 try:
                     result = future.result()
                     if result:
                         valid_deals.append(result)
-                        
-                except Exception as e:
-                    logger.error(f"Deal {deal['title']} generated an exception: {e}")
-        
-        logger.info(f"Found {len(valid_deals)} valid deals")
+                except Exception:
+                    pass  # Silently skip failed deals
         
     finally:
         # Close all browsers when done
-        logger.info("Closing browsers...")
         browser_pool.close_all()
     
     # Post-process: remove duplicates and sort by source
@@ -82,7 +71,10 @@ def validate_deals_batch(deals):
     
     # Save to JSON file
     save_json_file(config.VALID_DEALS_JSON, processed_deals)
-    logger.info(f"Valid deals saved to {config.VALID_DEALS_JSON}")
+    
+    # Count total deals (not just source groups)
+    total_deals = sum(len(group) for group in processed_deals)
+    logger.info(f"Validated {total_deals} deals from {len(processed_deals)} sources")
     
     return processed_deals
 
@@ -114,15 +106,13 @@ def _validate_deal_worker(deal, posted_games_list, steam_games, browser_pool):
             time.sleep(0.1)
         
         if not driver:
-            logger.warning(f"No available driver for {deal['title']}")
             return None
         
         # Validate the deal
         result = _validate_deal(deal, driver, steam_games)
         return result
         
-    except Exception as e:
-        logger.error(f"ERROR processing {deal['title']}: {e}")
+    except Exception:
         return None
     finally:
         if driver:
@@ -147,12 +137,10 @@ def _validate_deal(deal, driver, steam_games):
     try:
         # IndieGala doesn't need web scraping - data already in CSV
         if deal_source == "IndieGala":
-            logger.info(f"{deal_source}: {deal_title}")
             return _validate_indiegala_deal(deal, steam_games)
         
         # Other sources need to visit the website
         driver.get(deal_link)
-        logger.info(f"{deal_source}: {deal_title} - {deal_link}")
         
         # Validate based on source
         if deal_source == "GOG.COM INT":
@@ -162,11 +150,9 @@ def _validate_deal(deal, driver, steam_games):
         elif deal_source == "YUPLAY":
             return _validate_yuplay_deal(deal, driver, steam_games)
         else:
-            logger.warning(f"Unsupported source: {deal_source}")
             return None
             
-    except Exception as e:
-        logger.error(f"ERROR validating {deal_title}: {e}")
+    except Exception:
         return None
 
 def _validate_gog_deal(deal, driver, steam_games):
@@ -181,19 +167,14 @@ def _validate_gog_deal(deal, driver, steam_games):
         discounted_price_text = driver.execute_script("return arguments[0].textContent;", discounted_price_span).strip()
         discounted_price = float(discounted_price_text)
         
-        logger.info(f"Found: {discount}% off - ${discounted_price:.2f}")
-        
         if discount and discounted_price and _compare_prices(deal["title"], discounted_price, steam_games):
             deal["discount"] = discount
             deal["salePrice"] = f"${discounted_price:.2f}"
-            logger.info("VALID - Cheaper than Steam")
             return deal
         else:
-            logger.info("INVALID - More expensive than Steam")
             return None
             
-    except Exception as e:
-        logger.error(f"Error validating GOG deal: {e}")
+    except Exception:
         return None
 
 def _validate_gamersgate_deal(deal, driver, steam_games):
@@ -229,20 +210,15 @@ def _validate_gamersgate_deal(deal, driver, steam_games):
         
         image_src = driver.find_element(By.CSS_SELECTOR, "div.catalog-item--image img").get_attribute("src")
         
-        logger.info(f"Found: {discount}% off - ${discounted_price:.2f}")
-        
         if discount > 0 and discounted_price and _compare_prices(deal["title"], discounted_price, steam_games):
             deal["discount"] = discount
             deal["salePrice"] = f"${discounted_price:.2f}"
             deal["image_link"] = image_src
-            logger.info("VALID - Cheaper than Steam")
             return deal
         else:
-            logger.info("INVALID - More expensive than Steam")
             return None
             
-    except Exception as e:
-        logger.error(f"Error validating GamersGate deal: {e}")
+    except Exception:
         return None
 
 def _validate_yuplay_deal(deal, driver, steam_games):
@@ -263,21 +239,14 @@ def _validate_yuplay_deal(deal, driver, steam_games):
                 price = driver.execute_script("return arguments[0].textContent;", discounted_price_element).replace('$', '').replace(',', '').strip()
                 price_float = float(price)
                 
-                logger.info(f"YUPLAY: {discount_int}% off - ${price_float:.2f}")
-                
                 if discount_int > 0 and price_float and _compare_prices(deal["title"], price_float, steam_games):
                     deal["discount"] = discount_int
                     deal["salePrice"] = f"${price_float:.2f}"
-                    logger.info("VALID - Cheaper than Steam")
                     return deal
-                else:
-                    logger.info("INVALID - Not cheaper than Steam")
-                    return None
         
         return None
         
-    except Exception as e:
-        logger.error(f"Error validating YUPLAY deal: {e}")
+    except Exception:
         return None
 
 def _validate_indiegala_deal(deal, steam_games):
@@ -316,22 +285,15 @@ def _validate_indiegala_deal(deal, steam_games):
 
         # If not present, discount can be 0 or not used
         if discounted_price > 0:
-            logger.info(f"IndieGala: {discount}% off - ${discounted_price:.2f}")
             if _compare_prices(deal["title"], discounted_price, steam_games):
                 if discount > 0:
                     deal["discount"] = discount
                 deal["salePrice"] = f"${discounted_price:.2f}"
-                logger.info("VALID - Cheaper than Steam")
                 return deal
-            else:
-                logger.info("INVALID - Not cheaper than Steam")
-                return None
 
-        logger.warning("Could not extract price from IndieGala deal")
         return None
 
-    except Exception as e:
-        logger.error(f"Error validating IndieGala deal: {e}")
+    except Exception:
         return None
 
 def _handle_gamersgate_age_verification(driver):
@@ -379,12 +341,7 @@ def _compare_prices(title, price, steam_games):
         if title == s_row[0] and s_row[1] != "Free":
             try:
                 steamdb_price = float(s_row[1].replace('$', '').replace(',', ''))
-                if price < steamdb_price:
-                    logger.info(f"CHEAPER: ${price:.2f} vs Steam ${steamdb_price:.2f}")
-                    return True
-                else:
-                    logger.info(f"MORE EXPENSIVE: ${price:.2f} vs Steam ${steamdb_price:.2f}")
-                    return False
+                return price < steamdb_price
             except ValueError:
                 return False
     return False
@@ -395,8 +352,7 @@ def _load_steam_prices():
         with open(config.STEAMDB_CSV, encoding="utf-8") as f:
             reader = csv.reader(f)
             return list(reader)
-    except Exception as e:
-        logger.error(f"Error loading Steam prices: {e}")
+    except Exception:
         return []
 
 def _postprocess_deals(valid_deals):
@@ -433,7 +389,6 @@ def _postprocess_deals(valid_deals):
         source_deals = [deal for deal in non_duplicate_deals if deal["source"] == source]
         sorted_deals.append(source_deals)
     
-    logger.info(f"After deduplication: {len(non_duplicate_deals)} unique deals from {len(different_sources)} sources")
     return sorted_deals
 
 def create_chrome_driver():
