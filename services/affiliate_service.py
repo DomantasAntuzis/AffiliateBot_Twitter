@@ -20,7 +20,7 @@ from selenium.webdriver.support import expected_conditions as EC
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
-from database.db_connect import get_connection, close_connection, execute_query
+from database.db_connect import get_connection, execute_query
 from utils.logger import logger
 
 
@@ -79,6 +79,139 @@ def get_affiliate_products_from_csv():
         logger.error(f"Error reading products CSV: {e}")
         return []
 
+def insert_gamersgate_offers():
+    """
+    Fetch GamersGate offers from API, match with affiliate products, and insert into database.
+    Only inserts offers for games that exist in affiliate products CSV.
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Import GamersGate API functions
+        import sys
+        import os
+        gamersgate_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'gamersgate_api.py')
+        if not os.path.exists(gamersgate_path):
+            logger.error("gamersgate_api.py not found")
+            return False
+        
+        # Import functions from gamersgate_api
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gamersgate_api", gamersgate_path)
+        gamersgate_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gamersgate_module)
+        
+        logger.info("Fetching GamersGate offers from API...")
+        
+        # Fetch all GamersGate offers
+        all_gamersgate_offers = []
+        platform = "pc"
+        page = 1
+        previous_page_names = None
+        session_timestamp = int(time.time() * 1000)
+        
+        while True:
+            data = gamersgate_module.fetch_gamersgate_page(page=page, platform=platform, timestamp=session_timestamp)
+            if not data:
+                break
+            
+            catalog = data.get("catalog", [])
+            if not catalog:
+                break
+            
+            parsed_items = [gamersgate_module.parse_item(i) for i in catalog]
+            current_names = [item.get("name") for item in parsed_items]
+            
+            # Check for duplicate
+            if previous_page_names is not None:
+                if current_names == previous_page_names:
+                    logger.info(f"Page {page} is duplicate of page {page-1}, stopping")
+                    break
+            
+            all_gamersgate_offers.extend(parsed_items)
+            previous_page_names = current_names
+            page += 1
+            time.sleep(1.5)
+        
+        logger.info(f"Fetched {len(all_gamersgate_offers)} GamersGate offers from {page-1} pages")
+        
+        # Get affiliate products from CSV
+        affiliate_products = get_affiliate_products_from_csv()
+        if not affiliate_products:
+            logger.error("No affiliate products found in CSV")
+            return False
+        
+        # Create mapping: normalized affiliate title -> affiliate product data
+        affiliate_map = {}
+        for product in affiliate_products:
+            title = product.get("TITLE", "").strip()
+            program_name = product.get("PROGRAM_NAME", "").strip()
+            if title and program_name == "GamersGate.com":
+                normalized_title = _normalize_title_for_matching(title)
+                # Store first match (or could store list if duplicates)
+                if normalized_title not in affiliate_map:
+                    affiliate_map[normalized_title] = product
+        
+        logger.info(f"Found {len(affiliate_map)} GamersGate affiliate products in CSV")
+        
+        # Match GamersGate offers with affiliate products
+        matched_offers = []
+        for gg_offer in all_gamersgate_offers:
+            gg_title = gg_offer.get("name", "").strip()
+            if not gg_title:
+                continue
+            
+            # Skip if not available
+            if not gg_offer.get("is_available", False):
+                continue
+            
+            # Skip if no sale price
+            if not gg_offer.get("raw_price", "").strip():
+                continue
+            
+            normalized_gg_title = _normalize_title_for_matching(gg_title)
+            affiliate_product = affiliate_map.get(normalized_gg_title)
+            
+            if affiliate_product:
+                # Combine GamersGate price data with affiliate URL/image
+                matched_offers.append({
+                    "TITLE": gg_title,  # Use GamersGate title
+                    "PROGRAM_NAME": "GamersGate.com",
+                    "LINK": affiliate_product.get("LINK", "").strip(),
+                    "IMAGE_LINK": affiliate_product.get("IMAGE_LINK", "").strip(),
+                    "PRICE": gg_offer.get("baseprice", ""),  # List price
+                    "SALE_PRICE": gg_offer.get("raw_price", ""),  # Sale price
+                    "DISCOUNT": str(gg_offer.get("discount_percent", 0))
+                })
+        
+        logger.info(f"Matched {len(matched_offers)} GamersGate offers with affiliate products")
+        
+        if not matched_offers:
+            logger.warning("No matched GamersGate offers to insert")
+            return True
+        
+        # Insert matched offers into database
+        db_connection = get_connection()
+        if not db_connection:
+            logger.error("Failed to connect to database")
+            return False
+        
+        try:
+            _insert_offers_to_database(db_connection, matched_offers)
+            logger.info(f"Successfully processed GamersGate offers")
+            return True
+        except Exception as e:
+            logger.error(f"Error inserting GamersGate offers: {e}")
+            return False
+        finally:
+            if db_connection and db_connection.is_connected():
+                db_connection.close()
+        
+    except Exception as e:
+        logger.error(f"Error in insert_gamersgate_offers: {e}")
+        return False
+
 
 # ============================================================================
 # CJ AFFILIATE FUNCTIONS
@@ -101,8 +234,8 @@ def _fetch_cj_data_files():
         return None
     
     today_str = datetime.now().strftime("%Y%m%d")
-    # file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-{today_str}.zip"
-    file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-20251115.zip"
+    file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-{today_str}.zip"
+    # file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-20251116.zip"
     url = url_base + file_path
     
     # Create directories
@@ -420,13 +553,13 @@ def _process_csv_files(cj_data_files, indiegala_products=None):
         else:
             _insert_offers_to_database(db_connection, all_rows_data)
         
-        close_connection(db_connection)
+        db_connection.close()
         return True
         
     except Exception as e:
         logger.error(f"Error creating combined CSV: {e}")
         if 'db_connection' in locals():
-            close_connection(db_connection)
+            db_connection.close()
         return False
 
 def _insert_offers_to_database(db_connection, all_rows_data):
@@ -590,7 +723,7 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
         image_url = row_data.get("IMAGE_LINK", "").strip()
         list_price = row_data.get("PRICE", "").strip()
         sale_price = row_data.get("SALE_PRICE", "").strip()
-        
+
         # Skip if essential data is missing
         if not title or not program_name or not affiliate_url:
             skipped_count += 1
@@ -636,6 +769,11 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
         
         # Calculate discount (round to whole number)
         discount = _calculate_discount(list_price, sale_price)
+        
+        # Skip if no discount (discount <= 0)
+        if discount <= 0:
+            skipped_count += 1
+            continue
         
         # Default is_valid to True (1)
         is_valid = 1

@@ -16,12 +16,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from utils.logger import logger
 from utils.helpers import load_json_file, save_json_file, load_posted_games
-from services.affiliate_service import fetch_all_affiliate_products
+from services.affiliate_service import fetch_all_affiliate_products, insert_gamersgate_offers
 from services.steam_service import fetch_steam_topsellers
 from services.deals_service import find_matching_deals
 from services.validation_service import validate_deals_batch
 from services.twitter_service import post_deal_to_twitter
-# from services.igdb_data_service import fetch_all_genres, fetch_all_igdb_games
+from services.igdb_data_service import fetch_all_genres, fetch_all_igdb_games
 
 def daily_data_collection():
     """
@@ -39,6 +39,10 @@ def daily_data_collection():
         if not fetch_all_affiliate_products():
             logger.error("Failed to fetch affiliate products")
             return
+        
+        # Step 1b: Insert GamersGate offers (matches with affiliate products from CSV)
+        logger.info("Step 1b/4: Inserting GamersGate offers...")
+        insert_gamersgate_offers()
         
         # Step 2: Fetch Steam top sellers
         logger.info("Step 2/4: Fetching Steam top sellers...")
@@ -200,7 +204,7 @@ def _select_unposted_deal(deals, posted_games_list):
     logger.warning(f"Could not find valid deal after {max_attempts} attempts")
     return None
 
-# def monthly_igdb_data_collection():
+def monthly_igdb_data_collection():
     """
     Monthly job: Fetch all genres and games from IGDB API
     Runs once per month at scheduled time
@@ -218,9 +222,9 @@ def _select_unposted_deal(deals, posted_games_list):
         logger.info("Genres fetch completed")
         
         # Step 2: Fetch all games
-        # logger.info("Step 2/2: Fetching all games from IGDB...")
-        # fetch_all_igdb_games()
-        # logger.info("Games fetch completed")
+        logger.info("Step 2/2: Fetching all games from IGDB...")
+        fetch_all_igdb_games()
+        logger.info("Games fetch completed")
         
         end_time = time.time()
         elapsed_time = end_time - start_time
@@ -232,7 +236,7 @@ def _select_unposted_deal(deals, posted_games_list):
     except Exception as e:
         logger.error(f"Error in monthly IGDB data collection: {e}")
 
-# def _check_and_run_monthly_igdb():
+def _check_and_run_monthly_igdb():
     """
     Wrapper function to check if it's the first day of the month
     and run monthly IGDB data collection if needed
@@ -254,7 +258,7 @@ def setup_scheduler():
     
     schedule.every().day.at(run_time).do(daily_data_collection)
     
-    # schedule.every().day.at("02:00").do(_check_and_run_monthly_igdb).tag("monthly_igdb")
+    schedule.every().day.at("02:00").do(_check_and_run_monthly_igdb).tag("monthly_igdb")
     
     logger.info("="*60)
     logger.info("Scheduler initialized!")

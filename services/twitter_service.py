@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
-from database.db_connect import get_connection, close_connection, execute_query
+from database.db_connect import get_connection, execute_query
 from utils.logger import logger
 from utils.helpers import add_posted_game
 
@@ -63,15 +63,76 @@ def post_deal_to_twitter(deal):
     
     # Post tweet
     try:
-        logger.info(f"Successfully posted tweet for {deal_title}")
+        response = client.create_tweet(text=tweet, media_ids=[media.media_id])
+        
+        # Log response details
+        if response:
+            connection = get_connection()
+            if not connection:
+                logger.error("Failed to get database connection")
+            else:
+                try:
+                    # Normalize distributor name to match database
+                    normalized_distributor = _normalize_distributor_name(deal_source)
+                    
+                    # Find the relevant offer_id based on offer details (title, affiliate_url, image_url, distributor)
+                    offer_row = execute_query(
+                        """
+                        SELECT offers.id
+                        FROM offers
+                        INNER JOIN items ON items.id = offers.item_id
+                        INNER JOIN distributors ON distributors.id = offers.distributor_id
+                        WHERE items.title = %s
+                        AND offers.affiliate_url = %s
+                        AND offers.image_url = %s
+                        AND distributors.name = %s
+                        """,
+                        (deal_title, deal_link, deal_image_link, normalized_distributor),
+                        fetch=True,
+                        connection=connection
+                    )
+                    offer_id = None
+                    if offer_row and len(offer_row) > 0:
+                        offer_id = offer_row[0][0]
+                        execute_query(
+                            "INSERT INTO twitter_posts (offer_id) VALUES (%s)",
+                            (offer_id,),
+                            fetch=False,
+                            connection=connection
+                        )
+                        connection.commit()
+                        logger.info(f"Recorded posted game in database. Offer ID: {offer_id}")
+                    else:
+                        logger.warning(f"Offer entry not found for posted deal: {deal_title} (distributor: {normalized_distributor})")
+                except Exception as e:
+                    logger.error(f"Error recording posted game in database: {e}")
+                finally:
+                    if connection and connection.is_connected():
+                        connection.close()
+                
+            logger.info(f"Tweet posted successfully for {deal_title}")
+            logger.info(f"Tweet ID: {response.data.get('id') if hasattr(response, 'data') else 'N/A'}")
+            logger.debug(f"Full response: {response}")
+
+        else:
+            logger.warning(f"Tweet posted but received empty response for {deal_title}")
         
         # Add to posted games list
         add_posted_game(deal_title, config.POSTED_GAMES_FILE, config.POSTED_GAMES_LIMIT)
         
         return True
         
+    except tweepy.TweepyException as e:
+        logger.error(f"Twitter API error posting tweet: {e}")
+        logger.error(f"Error details: {e.response if hasattr(e, 'response') else 'No response data'}")
+        if hasattr(e, 'api_code'):
+            logger.error(f"API error code: {e.api_code}")
+        if hasattr(e, 'api_messages'):
+            logger.error(f"API messages: {e.api_messages}")
+        return False
     except Exception as e:
-        logger.error(f"Error posting tweet: {e}")
+        logger.error(f"Unexpected error posting tweet: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
         return False
 
 def _download_game_image(image_url):
@@ -158,4 +219,28 @@ def _format_source_name(source):
         return "GamersGate"
     else:
         return source
+
+def _normalize_distributor_name(program_name):
+    """
+    Normalize PROGRAM_NAME from deal source to match database distributor names
+    Same logic as affiliate_service.py
+    
+    Args:
+        program_name: Original program/source name
+    
+    Returns:
+        str: Normalized distributor name for database lookup
+    """
+    program_name = program_name.strip()
+    
+    # Mapping from deal source to database distributor name
+    name_mapping = {
+        "GamersGate.com": "GamersGate",
+        "GOG.COM INT": "GOG",
+        "YUPLAY": "Yuplay",
+        "IndieGala": "IndieGala",
+    }
+    
+    # Return mapped name if exists, otherwise return original
+    return name_mapping.get(program_name, program_name)
 

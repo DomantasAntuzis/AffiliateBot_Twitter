@@ -7,7 +7,7 @@ import sys
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.db_connect import get_connection, close_connection, execute_query
+from database.db_connect import get_connection, execute_query, execute_many
 from utils.logger import logger
 
 
@@ -87,7 +87,7 @@ def fetch_all_genres():
 
         time.sleep(0.3)
 
-    close_connection(connection)
+    connection.close()
     logger.info("Finished fetch_all_genres()")
     return None
 
@@ -159,26 +159,24 @@ def fetch_all_igdb_games():
 
             # Batch insert all items at once
             try:
-                cursor = connection.cursor(buffered=True)
-                cursor.executemany(
+                execute_many(
                     "INSERT INTO items (title, item_type, igdb_id) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE title = VALUES(title)",
-                    items_to_insert
+                    items_to_insert,
+                    connection=connection,
+                    buffered=True
                 )
-                cursor.close()
                 
                 print(f"Batch inserted {len(items_to_insert)} games")
                 
                 # Batch query to get all item_ids for this batch
-                # Somehow regular execute_query function not working here
-
-                cursor = connection.cursor(buffered=True)
                 format_strings = ','.join(['%s'] * len(igdb_ids_to_query))
-                cursor.execute(
+                items_results = execute_query(
                     f"SELECT * FROM items WHERE igdb_id IN ({format_strings})",
-                    tuple(igdb_ids_to_query)
+                    tuple(igdb_ids_to_query),
+                    fetch=True,
+                    connection=connection,
+                    buffered=True
                 )
-                items_results = cursor.fetchall()
-                cursor.close()
                 
                 # Create mapping: igdb_id -> item_id (primary key is first column, igdb_id is 4th column)
                 # Adjust indices based on your actual table schema
@@ -215,12 +213,12 @@ def fetch_all_igdb_games():
                 
                 # Batch insert all genres at once
                 if genre_inserts:
-                    cursor = connection.cursor(buffered=True)
-                    cursor.executemany(
+                    execute_many(
                         "INSERT INTO item_genres (item_id, genre_id) VALUES (%s, %s) ON DUPLICATE KEY UPDATE item_id = item_id",
-                        genre_inserts
+                        genre_inserts,
+                        connection=connection,
+                        buffered=True
                     )
-                    cursor.close()
                     print(f"Batch inserted {len(genre_inserts)} genre relationships")
                 
                 # Single commit for entire batch
@@ -253,16 +251,6 @@ def fetch_all_igdb_games():
             print(f"Response text: {response.text if 'response' in locals() else 'No response'}")
             break
     
-    close_connection(connection)
+    connection.close()
     logger.info(f"Finished fetch_all_igdb_games(). Total games fetched: {len(all_games)}")
     return all_games
-
-# games = fetch_all_igdb_games()
-
-# with open("IGDB_games.json", "w") as f:
-#     json.dump(games, f, indent=4)
-
-all_games = fetch_all_igdb_games()
-
-with open("IGDB_games.json", "w") as f:
-    json.dump(all_games, f, indent=4)
