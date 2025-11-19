@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 from utils.logger import logger
+from database.db_connect import get_connection
 
 def find_matching_deals():
     """
@@ -30,13 +31,20 @@ def find_matching_deals():
             if product_list and product_list[0][0] == "PROGRAM_NAME":
                 product_list = product_list[1:]
         
-        # Read Steam file
-        with open(config.STEAMDB_CSV, encoding="utf-8") as sf:
-            steam_reader = csv.reader(sf)
-            steam_list = list(steam_reader)
-            # Skip header row if present
-            if steam_list and steam_list[0][0].lower() == "name":
-                steam_list = steam_list[1:]
+        # Read Steam top sellers from database
+        connection = get_connection()
+        if not connection:
+            logger.error("Failed to get database connection")
+            return []
+        
+        cursor = connection.cursor()
+        cursor.execute("SELECT title FROM topsellers ORDER BY id ASC")
+        steam_rows = cursor.fetchall()
+        cursor.close()
+        connection.close()
+        
+        # Convert to list format for compatibility
+        steam_list = [[row[0]] for row in steam_rows]
         
         deals = []
         

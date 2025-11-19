@@ -13,10 +13,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 from utils.logger import logger
+from database.db_connect import get_connection, execute_many
 
 def fetch_steam_topsellers():
     """
-    Fetch Steam top sellers and save to CSV
+    Fetch Steam top sellers and save to database and CSV
     
     Returns:
         bool: True if successful, False otherwise
@@ -32,13 +33,16 @@ def fetch_steam_topsellers():
         logger.error("Failed to fetch Steam top sellers")
         return False
     
-    # Save to CSV
-    success = _save_to_csv(topsellers)
+    # Save to database (primary storage)
+    db_success = _save_to_database(topsellers)
     
-    if success:
-        logger.info(f"Successfully fetched {len(topsellers)} Steam top sellers")
+    # Save to CSV (backup)
+    csv_success = _save_to_csv(topsellers)
     
-    return success
+    if db_success:
+        logger.info(f"Successfully fetched and saved {len(topsellers)} Steam top sellers to database")
+    
+    return db_success
 
 def _fetch_batch(start, count=100, cc="US", lang="en"):
     """
@@ -144,9 +148,144 @@ def _fetch_top500_topsellers(cc="US", lang="en"):
     logger.info(f"Total fetched: {len(all_results)} games")
     return all_results
 
+def _parse_price(price_str):
+    """
+    Parse price string to decimal value
+    
+    Args:
+        price_str: Price string (e.g., "$29.99", "Free", "N/A", "29.99")
+    
+    Returns:
+        float: Parsed price value, or 0.00 if price is Free/N/A/invalid
+    """
+    if not price_str or price_str in ["Free", "N/A", "?", ""]:
+        return 0.00
+    
+    try:
+        # Remove currency symbols, commas, and whitespace
+        cleaned = str(price_str).replace("$", "").replace("€", "").replace("£", "").replace(",", "").strip()
+        
+        # Try to extract numeric value (handle cases like "$29.99" or "29.99")
+        import re
+        match = re.search(r'(\d+\.?\d*)', cleaned)
+        if match:
+            return float(match.group(1))
+        
+        return 0.00
+    except Exception:
+        return 0.00
+
+def _save_to_database(games):
+    """
+    Save games to topsellers database table
+    First empties the table, then inserts new data with ranking as ID
+    
+    Args:
+        games: List of game dictionaries (ordered by ranking)
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    import re
+    
+    def _clean_title(title):
+        """Remove emojis and special characters that might cause encoding issues, and truncate if too long"""
+        # Remove emojis (4-byte UTF-8 characters)
+        emoji_pattern = re.compile(
+            "["
+            "\U0001F600-\U0001F64F"  # emoticons
+            "\U0001F300-\U0001F5FF"  # symbols & pictographs
+            "\U0001F680-\U0001F6FF"  # transport & map symbols
+            "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+            "\U00002702-\U000027B0"
+            "\U000024C2-\U0001F251"
+            "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+            "\U0001FA00-\U0001FA6F"  # Chess Symbols
+            "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
+            "]+", 
+            flags=re.UNICODE
+        )
+        cleaned = emoji_pattern.sub('', title)
+        # Remove any remaining 4-byte UTF-8 characters
+        cleaned = cleaned.encode('utf-8', 'ignore').decode('utf-8')
+        cleaned = cleaned.strip()
+        
+        # Truncate to 255 characters (database column limit)
+        if len(cleaned) > 255:
+            cleaned = cleaned[:255]
+        
+        return cleaned
+    
+    try:
+        connection = get_connection()
+        if not connection:
+            logger.error("Failed to get database connection")
+            return False
+        
+        cursor = connection.cursor()
+        
+        # Step 1: Empty the topsellers table (delete all rows)
+        cursor.execute("DELETE FROM topsellers")
+        logger.info("Cleared topsellers table")
+        
+        # Step 2: Prepare data for batch insert
+        # ID represents ranking (1-500), title is the game name, price is decimal(10,2)
+        # Skip games with "Free" prices since hidef2p=1 should prevent free games
+        insert_values = []
+        skipped_free = 0
+        ranking = 1
+        
+        for game in games:
+            cleaned_title = _clean_title(game['title'])
+            if not cleaned_title:
+                continue
+            
+            price_str = game.get('price', 'N/A')
+            # Skip free games (shouldn't appear with hidef2p=1, but handle edge cases)
+            if price_str in ["Free", "N/A", "?", ""]:
+                skipped_free += 1
+                logger.warning(f"Skipping game with invalid/free price: '{cleaned_title}' (price: '{price_str}')")
+                continue
+            
+            # Parse price from string (e.g., "$29.99" -> 29.99)
+            price_value = _parse_price(price_str)
+            
+            # Double-check: if parsed price is 0.00, skip it (shouldn't happen with hidef2p)
+            if price_value == 0.00:
+                skipped_free += 1
+                logger.warning(f"Skipping game with 0.00 price: '{cleaned_title}' (original: '{price_str}')")
+                continue
+            
+            insert_values.append((ranking, cleaned_title, price_value))
+            ranking += 1
+        
+        # Step 3: Batch insert new data
+        insert_query = "INSERT INTO topsellers (id, title, price) VALUES (%s, %s, %s)"
+        execute_many(insert_query, insert_values, connection=connection)
+        
+        connection.commit()
+        cursor.close()
+        connection.close()
+        
+        if skipped_free > 0:
+            logger.warning(f"Skipped {skipped_free} games with free/invalid prices (should not occur with hidef2p=1)")
+        
+        logger.info(f"Successfully inserted {len(insert_values)} top sellers into database")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error saving to database: {e}")
+        if connection:
+            try:
+                connection.rollback()
+                connection.close()
+            except:
+                pass
+        return False
+
 def _save_to_csv(games):
     """
-    Save games to CSV file
+    Save games to CSV file (backup storage)
     
     Args:
         games: List of game dictionaries
@@ -174,23 +313,30 @@ def _save_to_csv(games):
 
 def get_steam_prices():
     """
-    Read and return Steam games with prices from CSV
+    Read and return Steam games from database
     
     Returns:
-        list: List of [title, price] pairs
+        list: List of [title, price] items (ordered by ranking)
     """
     try:
-        with open(config.STEAMDB_CSV, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            games = list(reader)
+        connection = get_connection()
+        if not connection:
+            logger.error("Failed to get database connection")
+            return []
         
-        logger.info(f"Loaded {len(games)-1} Steam games from CSV")  # -1 for header
+        cursor = connection.cursor()
+        cursor.execute("SELECT title, price FROM topsellers ORDER BY id ASC")
+        rows = cursor.fetchall()
+        cursor.close()
+        connection.close()
+        
+        # Convert to list format: [[title, price], [title, price], ...]
+        games = [[row[0], row[1]] for row in rows]
+        
+        logger.info(f"Loaded {len(games)} Steam games from database")
         return games
         
-    except FileNotFoundError:
-        logger.error(f"Steam CSV not found: {config.STEAMDB_CSV}")
-        return []
     except Exception as e:
-        logger.error(f"Error reading Steam CSV: {e}")
+        logger.error(f"Error reading Steam data from database: {e}")
         return []
 

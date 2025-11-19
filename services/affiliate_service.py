@@ -79,62 +79,174 @@ def get_affiliate_products_from_csv():
         logger.error(f"Error reading products CSV: {e}")
         return []
 
+def _fetch_gamersgate_page(session, page=1, platform="pc", timestamp=None):
+    """
+    Fetch a single page of GamersGate offers from their API using session
+    
+    Args:
+        session: requests.Session object (maintains same proxy IP)
+        page: Page number (default: 1)
+        platform: Platform filter (default: "pc")
+        timestamp: Session timestamp for consistency
+    
+    Returns:
+        dict: JSON response data or None on failure
+    """
+    if timestamp is None:
+        timestamp = int(time.time() * 1000)
+    
+    url = "https://www.gamersgate.com/api/offers/"
+    params = {
+        "platform": platform,
+        "timestamp": timestamp,
+        "need_change_browser_url": "true",
+        "activations": 1
+    }
+    
+    # Only add page param if page > 1 (matching browser behavior)
+    if page > 1:
+        params["page"] = page
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Referer": "https://www.gamersgate.com/offers/",
+    }
+    
+    try:
+        response = session.get(url, params=params, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        return data
+    except Exception as e:
+        logger.warning(f"Error fetching GamersGate page {page}: {str(e)[:100]}")
+        return None
+
+def _parse_gamersgate_item(item):
+    """
+    Parse a GamersGate catalog item and extract relevant fields
+    
+    Args:
+        item: Raw item dictionary from API
+    
+    Returns:
+        dict: Parsed item with name, discount, prices, availability
+    """
+    import html
+    
+    # Clean prices (remove HTML entities and currency symbols)
+    baseprice = item.get("baseprice", "")
+    if baseprice:
+        baseprice = html.unescape(baseprice)
+        # Remove common currency symbols (€, $, £, ¥, etc.) and HTML entities
+        baseprice = baseprice.replace("&nbsp;", " ").replace("€", "").replace("$", "").replace("£", "").replace("¥", "").strip()
+    
+    raw_price = item.get("raw_price", "").strip()
+    if raw_price:
+        # Remove currency symbols from raw_price too
+        raw_price = raw_price.replace("€", "").replace("$", "").replace("£", "").replace("¥", "").strip()
+    
+    parsed = {
+        "name": item.get("name", "").strip(),
+        "discount_percent": item.get("discount_percent", 0),
+        "raw_price": raw_price,
+        "is_available": item.get("is_available", False),
+        "baseprice": baseprice,
+    }
+    
+    return parsed
+
 def insert_gamersgate_offers():
     """
     Fetch GamersGate offers from API, match with affiliate products, and insert into database.
+    Uses requests.Session() to maintain consistent proxy IP across all requests.
     Only inserts offers for games that exist in affiliate products CSV.
     
     Returns:
         bool: True if successful, False otherwise
     """
     try:
-        # Import GamersGate API functions
-        import sys
-        import os
-        gamersgate_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'gamersgate_api.py')
-        if not os.path.exists(gamersgate_path):
-            logger.error("gamersgate_api.py not found")
-            return False
-        
-        # Import functions from gamersgate_api
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("gamersgate_api", gamersgate_path)
-        gamersgate_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(gamersgate_module)
-        
         logger.info("Fetching GamersGate offers from API...")
+        
+        # Setup proxy
+        proxies = {}
+        if hasattr(config, 'ROTATING_PROXY') and config.ROTATING_PROXY:
+            proxy_url = str(config.ROTATING_PROXY).split(',')[0].split(';')[0].strip()
+            proxies = {
+                'http': proxy_url,
+                'https': proxy_url
+            }
+            logger.info(f"Using proxy for GamersGate API")
+        
+        # Create a Session object to maintain same connection (and same proxy IP)
+        session = requests.Session()
+        if proxies:
+            session.proxies.update(proxies)
+        
+        # Verify proxy IP before starting
+        if proxies:
+            try:
+                logger.info("Verifying proxy IP...")
+                ip_check = session.get("https://api.ipify.org?format=json", timeout=10)
+                actual_ip = ip_check.json().get('ip', 'Unknown')
+                logger.info(f"GamersGate requests using proxy IP: {actual_ip}")
+            except Exception as e:
+                logger.warning(f"Could not verify proxy IP: {e}")
         
         # Fetch all GamersGate offers
         all_gamersgate_offers = []
         platform = "pc"
         page = 1
         previous_page_names = None
+        # Use shared timestamp for consistent pagination (like browsers do)
         session_timestamp = int(time.time() * 1000)
         
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+        
         while True:
-            data = gamersgate_module.fetch_gamersgate_page(page=page, platform=platform, timestamp=session_timestamp)
+            # Use shared timestamp and session for all pages to ensure consistent catalog snapshot
+            data = _fetch_gamersgate_page(
+                session=session,
+                page=page,
+                platform=platform,
+                timestamp=session_timestamp
+            )
             if not data:
-                break
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.warning(f"GamersGate: Stopped after {max_consecutive_failures} failed page requests")
+                    break
+                page += 1
+                time.sleep(1)
+                continue
             
             catalog = data.get("catalog", [])
             if not catalog:
                 break
             
-            parsed_items = [gamersgate_module.parse_item(i) for i in catalog]
+            parsed_items = [_parse_gamersgate_item(i) for i in catalog]
             current_names = [item.get("name") for item in parsed_items]
             
-            # Check for duplicate
+            # Check for duplicate (compare first 5 items to be less strict)
             if previous_page_names is not None:
-                if current_names == previous_page_names:
-                    logger.info(f"Page {page} is duplicate of page {page-1}, stopping")
+                # Compare first 5 items instead of all items for more robust detection
+                current_sample = current_names[:5] if len(current_names) >= 5 else current_names
+                previous_sample = previous_page_names[:5] if len(previous_page_names) >= 5 else previous_page_names
+                
+                if current_sample == previous_sample:
                     break
             
             all_gamersgate_offers.extend(parsed_items)
             previous_page_names = current_names
+            consecutive_failures = 0  # Reset on success
             page += 1
             time.sleep(1.5)
         
-        logger.info(f"Fetched {len(all_gamersgate_offers)} GamersGate offers from {page-1} pages")
+        # Close session
+        session.close()
+        
+        logger.info(f"Collected {len(all_gamersgate_offers)} GamersGate offers from {page-1} pages")
         
         # Get affiliate products from CSV
         affiliate_products = get_affiliate_products_from_csv()
@@ -174,16 +286,32 @@ def insert_gamersgate_offers():
             affiliate_product = affiliate_map.get(normalized_gg_title)
             
             if affiliate_product:
-                # Combine GamersGate price data with affiliate URL/image
-                matched_offers.append({
-                    "TITLE": gg_title,  # Use GamersGate title
-                    "PROGRAM_NAME": "GamersGate.com",
-                    "LINK": affiliate_product.get("LINK", "").strip(),
-                    "IMAGE_LINK": affiliate_product.get("IMAGE_LINK", "").strip(),
-                    "PRICE": gg_offer.get("baseprice", ""),  # List price
-                    "SALE_PRICE": gg_offer.get("raw_price", ""),  # Sale price
-                    "DISCOUNT": str(gg_offer.get("discount_percent", 0))
-                })
+                # Get prices
+                sale_price = gg_offer.get("raw_price", "").strip()
+                baseprice = gg_offer.get("baseprice", "").strip()
+                discount_percent = gg_offer.get("discount_percent", 0)
+                
+                # If no baseprice but we have discount_percent, calculate it
+                if not baseprice and discount_percent > 0 and sale_price:
+                    try:
+                        sale_float = float(sale_price.replace("$", "").replace(",", "").strip())
+                        # discount_percent = (baseprice - sale_price) / baseprice * 100
+                        # So: baseprice = sale_price / (1 - discount_percent/100)
+                        baseprice = str(round(sale_float / (1 - discount_percent / 100), 2))
+                    except:
+                        pass
+                
+                # Only add if we have both prices
+                if baseprice and sale_price:
+                    matched_offers.append({
+                        "TITLE": gg_title,  # Use GamersGate title
+                        "PROGRAM_NAME": "GamersGate.com",
+                        "LINK": affiliate_product.get("LINK", "").strip(),
+                        "IMAGE_LINK": affiliate_product.get("IMAGE_LINK", "").strip(),
+                        "PRICE": baseprice,  # List price (calculated if needed)
+                        "SALE_PRICE": sale_price,  # Sale price
+                        "DISCOUNT": str(discount_percent)
+                    })
         
         logger.info(f"Matched {len(matched_offers)} GamersGate offers with affiliate products")
         
@@ -716,6 +844,9 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
     price_conversion_failed_count = 0
     missing_essential_data_count = 0
     
+    # Track stats per distributor for debugging
+    distributor_stats = {}
+    
     for row_data in all_rows_data:
         title = row_data.get("TITLE", "").strip()
         program_name = row_data.get("PROGRAM_NAME", "").strip()
@@ -724,34 +855,50 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
         list_price = row_data.get("PRICE", "").strip()
         sale_price = row_data.get("SALE_PRICE", "").strip()
 
+        # Initialize distributor stats if not exists
+        if program_name and program_name not in distributor_stats:
+            distributor_stats[program_name] = {
+                'total': 0, 'valid': 0, 'missing_essential': 0, 'missing_item': 0,
+                'missing_distributor': 0, 'missing_sale_price': 0,
+                'price_conversion_failed': 0, 'discount_too_low': 0
+            }
+        
+        if program_name:
+            distributor_stats[program_name]['total'] += 1
+
         # Skip if essential data is missing
         if not title or not program_name or not affiliate_url:
             skipped_count += 1
             missing_essential_data_count += 1
+            if program_name:
+                distributor_stats[program_name]['missing_essential'] += 1
             continue
         
         # Fast dictionary lookup (no query!)
         item_id = item_id_map.get(title)
         if not item_id:
             missing_item_count += 1
+            distributor_stats[program_name]['missing_item'] += 1
             continue
         
         distributor_id = distributor_id_map.get(program_name)
         if not distributor_id:
             missing_distributor_count += 1
+            distributor_stats[program_name]['missing_distributor'] += 1
             continue
         
         # Skip if no sale_price (required)
         if not sale_price or not sale_price.strip():
             missing_sale_price_count += 1
             skipped_count += 1
+            distributor_stats[program_name]['missing_sale_price'] += 1
             continue
         
         # Convert prices to float for database
         try:
-            # Clean price strings: remove $, commas, and USD text (case-insensitive)
-            list_price_clean = str(list_price).replace("$", "").replace(",", "").upper().replace("USD", "").strip() if list_price else ""
-            sale_price_clean = str(sale_price).replace("$", "").replace(",", "").upper().replace("USD", "").strip() if sale_price else ""
+            # Clean price strings: remove currency symbols ($, €, £, ¥), commas, and currency codes (USD, EUR, GBP, etc.)
+            list_price_clean = str(list_price).replace("$", "").replace("€", "").replace("£", "").replace("¥", "").replace(",", "").upper().replace("USD", "").replace("EUR", "").replace("GBP", "").strip() if list_price else ""
+            sale_price_clean = str(sale_price).replace("$", "").replace("€", "").replace("£", "").replace("¥", "").replace(",", "").upper().replace("USD", "").replace("EUR", "").replace("GBP", "").strip() if sale_price else ""
             
             list_price_float = float(list_price_clean) if list_price_clean else None
             sale_price_float = float(sale_price_clean) if sale_price_clean else None
@@ -760,19 +907,22 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
             sale_price_float = None
             price_conversion_failed_count += 1
             skipped_count += 1
+            distributor_stats[program_name]['price_conversion_failed'] += 1
             continue
         
         # Skip if sale_price conversion failed or is None
         if sale_price_float is None:
             skipped_count += 1
+            distributor_stats[program_name]['price_conversion_failed'] += 1
             continue
         
-        # Calculate discount (round to whole number)
-        discount = _calculate_discount(list_price, sale_price)
+        # Calculate discount (round to whole number) - use cleaned prices!
+        discount = _calculate_discount(list_price_clean, sale_price_clean)
         
-        # Skip if no discount (discount <= 0)
-        if discount <= 0:
+        # Skip if discount is less than 20% (minimum requirement for all distributors)
+        if discount < 20:
             skipped_count += 1
+            distributor_stats[program_name]['discount_too_low'] += 1
             continue
         
         # Default is_valid to True (1)
@@ -789,6 +939,7 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
             discount,
             is_valid
         ))
+        distributor_stats[program_name]['valid'] += 1
     
     stats = {
         'total': len(all_rows_data),
@@ -798,8 +949,20 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
         'missing_distributor': missing_distributor_count,
         'missing_sale_price': missing_sale_price_count,
         'price_conversion_failed': price_conversion_failed_count,
-        'missing_essential': missing_essential_data_count
+        'missing_essential': missing_essential_data_count,
+        'distributor_stats': distributor_stats
     }
+    
+    # Log detailed stats for GamersGate, GOG, and YUPLAY to debug insertion issues
+    for dist_name in ['GamersGate.com', 'GOG.COM INT', 'YUPLAY']:
+        if dist_name in distributor_stats:
+            stats_data = distributor_stats[dist_name]
+            logger.info(f"{dist_name} stats: total={stats_data['total']}, valid={stats_data['valid']}, "
+                      f"missing_item={stats_data['missing_item']}, missing_distributor={stats_data['missing_distributor']}, "
+                      f"missing_sale_price={stats_data['missing_sale_price']}, "
+                      f"price_conversion_failed={stats_data['price_conversion_failed']}, "
+                      f"discount_too_low={stats_data['discount_too_low']}, "
+                      f"missing_essential={stats_data['missing_essential']}")
     
     # Write missing game titles to file (only if there are missing items)
     if missing_item_count > 0:
@@ -900,7 +1063,7 @@ def _normalize_distributor_name(program_name):
     name_mapping = {
         "GamersGate.com": "GamersGate",
         "GOG.COM INT": "GOG",
-        "YUPLAY": "Yuplay",
+        "YUPLAY": "YUPLAY",  # Database has YUPLAY in all caps
         "IndieGala": "IndieGala",
     }
     

@@ -40,9 +40,9 @@ def run_api_server():
         )
         
         # Include routers
-        app.include_router(items_router, prefix="/api/items", tags=["items"])
+        app.include_router(items_router, prefix="/api", tags=["offers"])
         
-        @app.get("/")
+        @app.get("/api")
         async def root():
             return {"status": "Hello"}
         

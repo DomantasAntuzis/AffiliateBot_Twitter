@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import os
 import sys
+import re
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -325,34 +326,93 @@ def _handle_gamersgate_age_verification(driver):
     except TimeoutException:
         pass
 
+def _normalize_title_for_matching(title):
+    """
+    Normalize title for fuzzy matching by removing punctuation and normalizing whitespace
+    Same logic as affiliate_service.py for consistency
+    
+    Args:
+        title: Title string to normalize
+    
+    Returns:
+        str: Normalized title for matching
+    """
+    # Convert to lowercase
+    normalized = title.lower().strip()
+    
+    # Replace common punctuation with spaces (hyphens, colons, semicolons, etc.)
+    normalized = re.sub(r'[-:;–—]', ' ', normalized)
+    
+    # Remove other punctuation (keep apostrophes for names like "O'Brien")
+    normalized = re.sub(r'[^\w\s\']', '', normalized)
+    
+    # Collapse multiple spaces to single space
+    normalized = re.sub(r'\s+', ' ', normalized)
+    
+    # Trim
+    normalized = normalized.strip()
+    
+    return normalized
+
 def _compare_prices(title, price, steam_games):
     """
-    Compare price with Steam price
+    Compare deal price with Steam price
+    Only validates deals that are cheaper than Steam price
     
     Args:
         title: Game title
-        price: Price to compare
-        steam_games: List of Steam games with prices
+        price: Deal price to compare
+        steam_games: List of Steam games [[title, price], [title, price], ...]
     
     Returns:
-        bool: True if cheaper than Steam, False otherwise
+        bool: True if deal is cheaper than Steam, False otherwise
     """
+    # Normalize title for matching (same as affiliate_service)
+    normalized_title = _normalize_title_for_matching(title)
+    
     for s_row in steam_games:
-        if title == s_row[0] and s_row[1] != "Free":
-            try:
-                steamdb_price = float(s_row[1].replace('$', '').replace(',', ''))
-                return price < steamdb_price
-            except ValueError:
-                return False
+        if len(s_row) >= 2:
+            steam_title = s_row[0]
+            steam_price = s_row[1]  # decimal(10,2) or None
+            
+            # Normalize Steam title for matching
+            normalized_steam = _normalize_title_for_matching(steam_title)
+            
+            # If titles match, compare prices
+            if normalized_title == normalized_steam:
+                # Skip if Steam price is 0.00 (free game) or None
+                if steam_price is None or float(steam_price) == 0.00:
+                    return False
+                
+                try:
+                    # Compare: deal must be cheaper than Steam
+                    if price < float(steam_price):
+                        return True
+                except (ValueError, TypeError):
+                    return False
+    
     return False
 
 def _load_steam_prices():
-    """Load Steam prices from CSV"""
+    """Load Steam prices from database"""
     try:
-        with open(config.STEAMDB_CSV, encoding="utf-8") as f:
-            reader = csv.reader(f)
-            return list(reader)
-    except Exception:
+        from database.db_connect import get_connection
+        
+        connection = get_connection()
+        if not connection:
+            return []
+        
+        cursor = connection.cursor()
+        cursor.execute("SELECT title, price FROM topsellers ORDER BY id ASC")
+        rows = cursor.fetchall()
+        cursor.close()
+        connection.close()
+        
+        # Convert to list format: [[title, price], [title, price], ...]
+        # price is decimal(10,2) or None for free games
+        return [[row[0], row[1]] for row in rows]
+    except Exception as e:
+        logger.error(f"Error loading Steam prices from database: {e}")
         return []
 
 def _postprocess_deals(valid_deals):
