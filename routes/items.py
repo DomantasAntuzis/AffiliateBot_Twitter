@@ -41,10 +41,36 @@ def get_db() -> Generator:
         if connection and connection.is_connected():
             connection.close()
 
+@router.get("/genres")
+async def get_genres(db = Depends(get_db)):
+    """
+    Get all available genres
+    
+    Returns:
+        List of genres with id and name
+    """
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        cursor = db.cursor(dictionary=True)
+        query = "SELECT id, name FROM genres ORDER BY name ASC"
+        cursor.execute(query)
+        genres = cursor.fetchall()
+        cursor.close()
+        return genres
+    except mysql.connector.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
 @router.get("/offers_list")
 async def get_offers(
     distributor: Optional[List[str]] = Query(None, description="Filter by distributor name(s). Example: ?distributor=GOG&distributor=YUPLAY"),
-    sort_by_top_sellers: bool = Query(False, description="Sort by Steam top 500 sellers (top sellers first)"),
+    genre: Optional[List[int]] = Query(None, description="Filter by genre ID(s). Example: ?genre=1&genre=2"),
+    sort_by: Optional[str] = Query(None, description="Sort by discount: 'discount_desc' or 'discount_asc'"),
+    limit: int = Query(60, ge=1, le=200, description="Number of items to return"),
+    offset: int = Query(0, ge=0, description="Number of items to skip"),
     db = Depends(get_db)
 ):
     """
@@ -61,9 +87,6 @@ async def get_offers(
     Examples:
         - Get all offers: /api/offers_list
         - Get only GOG offers: /api/offers_list?distributor=GOG
-        - Get GOG and YUPLAY offers: /api/offers_list?distributor=GOG&distributor=YUPLAY
-        - Get all offers sorted by top sellers: /api/offers_list?sort_by_top_sellers=true
-        - Get GOG offers sorted by top sellers: /api/offers_list?distributor=GOG&sort_by_top_sellers=true
     """
     if db is None:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -71,9 +94,9 @@ async def get_offers(
     try:
         cursor = db.cursor(dictionary=True)
         
-        # Build query with optional distributor filter
+        # Build query with optional filters
         query = """
-            SELECT 
+            SELECT DISTINCT
                 o.id,
                 o.item_id,
                 o.distributor_id,
@@ -90,58 +113,112 @@ async def get_offers(
             LEFT JOIN distributors d ON o.distributor_id = d.id
         """
         
-        # Add WHERE clause if distributor filter is provided
+        # Add JOIN for genre filtering if needed
+        where_clauses = []
         params = []
+        
+        if genre and len(genre) > 0:
+            query += " INNER JOIN item_genres ig ON o.item_id = ig.item_id"
+            placeholders = ','.join(['%s'] * len(genre))
+            where_clauses.append(f"ig.genre_id IN ({placeholders})")
+            params.extend(genre)
+        
+        # Add distributor filter if provided
         if distributor and len(distributor) > 0:
-            # Create placeholders for IN clause
             placeholders = ','.join(['%s'] * len(distributor))
-            query += f" WHERE d.name IN ({placeholders})"
+            where_clauses.append(f"d.name IN ({placeholders})")
             params.extend(distributor)
         
-        query += " ORDER BY o.id ASC"
+        # Add WHERE clause if any filters are present
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
         
-        cursor.execute(query, params)
+        # Add sorting
+        if sort_by == "discount_desc":
+            query += " ORDER BY o.discount DESC, o.id ASC"
+        elif sort_by == "discount_asc":
+            query += " ORDER BY o.discount ASC, o.id ASC"
+        else:
+            query += " ORDER BY o.id ASC"
+        
+        query += " LIMIT %s OFFSET %s"
+        
+        cursor.execute(query, params + [limit, offset])
         offers = cursor.fetchall()
         cursor.close()
         
-        # Sort by top sellers if requested
-        if sort_by_top_sellers:
-            # Load Steam top sellers from database
-            topsellers_cursor = db.cursor(dictionary=True)
-            topsellers_cursor.execute("SELECT title FROM topsellers ORDER BY id ASC")
-            topsellers_rows = topsellers_cursor.fetchall()
-            topsellers_cursor.close()
-            
-            # Create a set of normalized top seller titles for fast lookup
-            steam_top_sellers = set()
-            for row in topsellers_rows:
-                normalized_title = _normalize_title_for_matching(row['title'])
-                steam_top_sellers.add(normalized_title)
-            
-            # Separate offers into top sellers and others
-            top_seller_offers = []
-            other_offers = []
-            
-            for offer in offers:
-                item_title = offer.get('item_title', '')
-                if item_title:
-                    normalized_title = _normalize_title_for_matching(item_title)
-                    if normalized_title in steam_top_sellers:
-                        top_seller_offers.append(offer)
-                    else:
-                        other_offers.append(offer)
-                else:
-                    other_offers.append(offer)
-            
-            # Shuffle each group separately for variety
-            random.shuffle(top_seller_offers)
-            random.shuffle(other_offers)
-            
-            # Combine: top sellers first, then others
-            offers = top_seller_offers + other_offers
-        else:
-            # Shuffle all offers randomly
-            random.shuffle(offers)
+        return offers
+        
+    except mysql.connector.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@router.get("/topsellers")
+async def get_topsellers(
+    genre: Optional[List[int]] = Query(None, description="Filter by genre ID(s). Example: ?genre=1&genre=2"),
+    limit: int = Query(60, ge=1, le=200, description="Number of items to return"),
+    offset: int = Query(0, ge=0, description="Number of items to skip"),
+    db = Depends(get_db)
+):
+    """
+    Get offers for games that are in Steam's top 500 sellers list
+    
+    Args:
+        distributor: Optional list of distributor names to filter by (e.g., "GOG", "YUPLAY", "GamersGate", "IndieGala")
+        db: Database connection dependency
+    
+    Returns:
+        List of offers for top seller games with item and distributor details
+        
+    Examples:
+        - Get all top seller offers: /api/topsellers
+        - Get only GOG top seller offers: /api/topsellers?distributor=GOG
+        - Get GOG and YUPLAY top seller offers: /api/topsellers?distributor=GOG&distributor=YUPLAY
+    """
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        cursor = db.cursor(dictionary=True)
+        
+        # Query: match topsellers with offers
+        query = """
+            SELECT DISTINCT
+                o.id,
+                o.item_id,
+                o.distributor_id,
+                o.affiliate_url,
+                o.image_url,
+                o.list_price,
+                o.sale_price,
+                o.discount,
+                o.is_valid,
+                i.title as item_title,
+                d.name as distributor_name,
+                ts.id as topseller_rank
+            FROM offers o
+            INNER JOIN items i ON o.item_id = i.id
+            INNER JOIN distributors d ON o.distributor_id = d.id
+            INNER JOIN topsellers ts ON i.title = ts.title
+        """
+        
+        params = []
+        where_clauses = ["o.is_valid = 1"]
+        
+        # Add genre filter if provided
+        if genre and len(genre) > 0:
+            query += " INNER JOIN item_genres ig ON o.item_id = ig.item_id"
+            placeholders = ','.join(['%s'] * len(genre))
+            where_clauses.append(f"ig.genre_id IN ({placeholders})")
+            params.extend(genre)
+        
+        query += " WHERE " + " AND ".join(where_clauses)
+        query += " ORDER BY ts.id ASC, d.name ASC LIMIT %s OFFSET %s"
+        
+        cursor.execute(query, params + [limit, offset])
+        offers = cursor.fetchall()
+        cursor.close()
         
         return offers
         

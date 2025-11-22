@@ -50,7 +50,7 @@ def run_api_server():
         uvicorn.run(
             app,
             host="0.0.0.0",
-            port=8000,
+            port=8001,
             log_level="info",
             access_log=False  # Disable access logs to reduce noise
         )

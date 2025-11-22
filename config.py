@@ -4,6 +4,8 @@ Centralized place for all configuration settings and environment variables
 """
 import os
 
+SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # CJ Affiliate API credentials
 CJ_HTTP_USERNAME = os.getenv("CJ_HTTP_USERNAME")
 CJ_HTTP_PASSWORD = os.getenv("CJ_HTTP_PASSWORD")
@@ -25,15 +27,15 @@ DB_PASSWORD = ""
 DB_NAME = "affiliate_marketing"
 
 # File paths
-DATA_DIR = "data"
+DATA_DIR = os.path.join(SERVER_DIR, "data")
 CSV_DIR = os.path.join(DATA_DIR, "csv")
 JSON_DIR = os.path.join(DATA_DIR, "json")
 IMAGES_DIR = os.path.join(DATA_DIR, "images")
-LOGS_DIR = "logs"
-TEMP_DIR = "product_files"
+LOGS_DIR = os.path.join(SERVER_DIR, "logs")
+TEMP_DIR = os.path.join(SERVER_DIR, "items_files")
 
 # CSV files
-PRODUCTS_CSV = os.path.join(CSV_DIR, "products_info.csv")
+PRODUCTS_CSV = os.path.join(CSV_DIR, "items_info.csv")
 STEAMDB_CSV = os.path.join(CSV_DIR, "steamdb_results.csv")
 MISSING_TITLES_CSV = os.path.join(CSV_DIR, "missing_game_titles.csv")
 
@@ -42,7 +44,7 @@ VALID_DEALS_JSON = os.path.join(JSON_DIR, "valid_deals.json")
 SHUFFLED_DEALS_JSON = os.path.join(JSON_DIR, "shuffled_deals.json")
 
 # Text files
-POSTED_GAMES_FILE = "posted_games.txt"
+POSTED_GAMES_FILE = os.path.join(SERVER_DIR, "posted_games.txt")
 
 # Application settings
 POSTED_GAMES_LIMIT = 60

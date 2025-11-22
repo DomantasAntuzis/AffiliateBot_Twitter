@@ -3,19 +3,20 @@ Helper utility functions used across the application
 """
 import os
 import json
+import config
 
 def ensure_directories():
     """Create all necessary directories if they don't exist"""
     directories = [
-        "data",
-        "data/csv",
-        "data/json",
-        "data/images",
-        "logs",
-        "product_files"
+        config.DATA_DIR,
+        config.CSV_DIR,
+        config.JSON_DIR,
+        config.IMAGES_DIR,
+        config.LOGS_DIR,
+        config.TEMP_DIR
     ]
     for directory in directories:
-        os.makedirs(directory, exist_ok=True)
+        os.makedirs(os.path.join(config.SERVER_DIR, directory), exist_ok=True)
 
 def load_json_file(filepath):
     """
@@ -89,6 +90,8 @@ def add_posted_game(title, filepath="posted_games.txt", limit=60):
         filepath: Path to posted games file
         limit: Maximum number of titles to keep (default: 60)
     """
+    if filepath is None:
+        filepath = config.POSTED_GAMES_FILE
     posted_titles = load_posted_games(filepath)
     posted_titles.append(title)
     save_posted_games(posted_titles, filepath, limit)

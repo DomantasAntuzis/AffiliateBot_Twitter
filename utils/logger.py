@@ -4,6 +4,7 @@ Centralized logging configuration for Affiliate Bot
 import logging
 import os
 from datetime import datetime
+import config
 
 def setup_logger(name="AffiliateBot", log_level=logging.INFO):
     """
@@ -17,7 +18,7 @@ def setup_logger(name="AffiliateBot", log_level=logging.INFO):
         logger: Configured logger instance
     """
     # Create logs directory if it doesn't exist
-    os.makedirs("logs", exist_ok=True)
+    os.makedirs(config.LOGS_DIR, exist_ok=True)
     
     # Create logger
     logger = logging.getLogger(name)
@@ -34,7 +35,7 @@ def setup_logger(name="AffiliateBot", log_level=logging.INFO):
     )
     
     # File handler - writes to app.log
-    file_handler = logging.FileHandler('logs/app.log', encoding='utf-8')
+    file_handler = logging.FileHandler(os.path.join(config.LOGS_DIR, 'app.log'), encoding='utf-8')
     file_handler.setLevel(log_level)
     file_handler.setFormatter(formatter)
     

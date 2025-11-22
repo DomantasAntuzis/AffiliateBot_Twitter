@@ -363,7 +363,7 @@ def _fetch_cj_data_files():
     
     today_str = datetime.now().strftime("%Y%m%d")
     file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-{today_str}.zip"
-    # file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-20251116.zip"
+    # file_path = f"/datatransfer/files/7609708/outgoing/productcatalog/306393/product_feedex-shopping-20251121.zip"
     url = url_base + file_path
     
     # Create directories
