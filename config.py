@@ -61,3 +61,8 @@ STEAM_LANGUAGE = "en"
 BROWSER_POOL_SIZE = 3
 VALIDATION_WORKERS = 3
 
+# Authentication settings
+SECRET_KEY = os.getenv("JWT_SECRET_KEY") or "change-this-secret-key-in-production"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+

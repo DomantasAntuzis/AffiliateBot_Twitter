@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.logger import logger
 from utils.helpers import ensure_directories
 from automation.scheduler import run_scheduler
+from routes.auth import auth_router
 
 shutdown_event = threading.Event()
 
@@ -23,6 +24,7 @@ def run_api_server():
         from fastapi import FastAPI
         from fastapi.middleware.cors import CORSMiddleware
         from routes.items import router as items_router
+        from routes.admin import admin_router
         
         app = FastAPI(
             title="Affiliate Bot API",
@@ -41,6 +43,8 @@ def run_api_server():
         
         # Include routers
         app.include_router(items_router, prefix="/api", tags=["offers"])
+        app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+        app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
         
         @app.get("/api")
         async def root():
