@@ -7,6 +7,7 @@ import os
 import threading
 import signal
 import time
+import uvicorn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -14,17 +15,19 @@ from utils.logger import logger
 from utils.helpers import ensure_directories
 from automation.scheduler import run_scheduler
 from routes.auth import auth_router
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from routes.items import router as items_router
+from routes.admin import admin_router
+from routes.images import router as images_router
+
 
 shutdown_event = threading.Event()
 
 def run_api_server():
     """Run the API server in a separate thread"""
     try:
-        import uvicorn
-        from fastapi import FastAPI
-        from fastapi.middleware.cors import CORSMiddleware
-        from routes.items import router as items_router
-        from routes.admin import admin_router
+
         
         app = FastAPI(
             title="Affiliate Bot API",
@@ -45,6 +48,7 @@ def run_api_server():
         app.include_router(items_router, prefix="/api", tags=["offers"])
         app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
         app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
+        app.include_router(images_router, prefix="/api", tags=["images"])
         
         @app.get("/api")
         async def root():
@@ -64,13 +68,7 @@ def run_api_server():
     except Exception as e:
         logger.error(f"Error starting API server: {e}")
 
-def run_scheduler_thread():
-    """Run the scheduler in a separate thread"""
-    try:
-        run_scheduler()
-    except Exception as e:
-        logger.error(f"Scheduler error: {e}")
-        shutdown_event.set()
+
 
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully"""

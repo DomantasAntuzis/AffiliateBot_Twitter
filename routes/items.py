@@ -3,12 +3,39 @@ Items API endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 import mysql.connector
-import random
 import re
+import os
 from database.db_connect import get_connection
 from typing import Generator, Optional, List
+from services.image_cache_service import is_image_cached
 
 router = APIRouter()
+
+# Get API base URL from environment or use default
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8001")
+
+def _transform_image_url(offer: dict) -> dict:
+    """
+    Transform image_url to use local IGDB image if available, otherwise keep original affiliate image
+    
+    Args:
+        offer: Offer dictionary with image_url and igdb_cover_image_id
+    
+    Returns:
+        dict: Modified offer with updated image_url
+    """
+    igdb_image_id = offer.get('igdb_cover_image_id')
+    
+    # Use local IGDB image if available and cached
+    if igdb_image_id and igdb_image_id != '0' and igdb_image_id != '':
+        igdb_image_id = str(igdb_image_id).strip()
+        if is_image_cached(igdb_image_id):
+            offer['image_url'] = f"{API_BASE_URL}/api/igdb-images/{igdb_image_id}.jpg"
+    
+    # Remove igdb_cover_image_id from response (internal use only)
+    offer.pop('igdb_cover_image_id', None)
+    
+    return offer
 
 def _normalize_title_for_matching(title: str) -> str:
     """
@@ -107,6 +134,7 @@ async def get_offers(
                 o.discount,
                 o.is_valid,
                 i.title as item_title,
+                i.igdb_cover_image_id,
                 d.name as distributor_name
             FROM offers o
             LEFT JOIN items i ON o.item_id = i.id
@@ -114,7 +142,7 @@ async def get_offers(
         """
         
         # Add JOIN for genre filtering if needed
-        where_clauses = []
+        where_clauses = ["o.is_hidden = 0"]  # Always filter out hidden items
         params = []
         
         if genre and len(genre) > 0:
@@ -129,9 +157,9 @@ async def get_offers(
             where_clauses.append(f"d.name IN ({placeholders})")
             params.extend(distributor)
         
-        # Add WHERE clause if any filters are present
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
+        # Add WHERE clause (always includes is_hidden = 0)
+        query += " WHERE " + " AND ".join(where_clauses)
+        # Note: is_hidden = 0 is already in WHERE clause above
         
         # Add sorting
         if sort_by == "discount_desc":
@@ -139,13 +167,19 @@ async def get_offers(
         elif sort_by == "discount_asc":
             query += " ORDER BY o.discount ASC, o.id ASC"
         else:
-            query += " ORDER BY o.id ASC"
+            # Deterministic shuffle - mixes distributors and games evenly
+            # Uses modulo hash for consistent ordering per day/session
+            query += " ORDER BY MOD(o.id * 7919, 1000000), o.discount DESC, d.name"
         
         query += " LIMIT %s OFFSET %s"
         
         cursor.execute(query, params + [limit, offset])
         offers = cursor.fetchall()
         cursor.close()
+        
+        # Transform image URLs to use local IGDB images when available
+        for offer in offers:
+            _transform_image_url(offer)
         
         return offers
         
@@ -195,6 +229,7 @@ async def get_topsellers(
                 o.discount,
                 o.is_valid,
                 i.title as item_title,
+                i.igdb_cover_image_id,
                 d.name as distributor_name,
                 ts.id as topseller_rank
             FROM offers o
@@ -204,7 +239,7 @@ async def get_topsellers(
         """
         
         params = []
-        where_clauses = ["o.is_valid = 1"]
+        where_clauses = ["o.is_valid = 1", "o.is_hidden = 0"]
         
         # Add genre filter if provided
         if genre and len(genre) > 0:
@@ -214,11 +249,16 @@ async def get_topsellers(
             params.extend(genre)
         
         query += " WHERE " + " AND ".join(where_clauses)
-        query += " ORDER BY ts.id ASC, d.name ASC LIMIT %s OFFSET %s"
+        # Keep topseller ranking but shuffle distributors within each game group
+        query += " ORDER BY ts.id ASC, MOD(o.id, 10), d.name LIMIT %s OFFSET %s"
         
         cursor.execute(query, params + [limit, offset])
         offers = cursor.fetchall()
         cursor.close()
+        
+        # Transform image URLs to use local IGDB images when available
+        for offer in offers:
+            _transform_image_url(offer)
         
         return offers
         
@@ -288,13 +328,14 @@ async def search_offers(
                 o.discount,
                 o.is_valid,
                 i.title as item_title,
+                i.igdb_cover_image_id,
                 d.name as distributor_name
             FROM offers o
             LEFT JOIN items i ON o.item_id = i.id
             LEFT JOIN distributors d ON o.distributor_id = d.id
         """
         
-        where_clauses = []
+        where_clauses = ["o.is_hidden = 0"]  # Always filter out hidden items
         params = []
         
         # Add genre filter if needed
@@ -359,6 +400,10 @@ async def search_offers(
         cursor.execute(query, params + [limit, offset])
         offers = cursor.fetchall()
         cursor.close()
+        
+        # Transform image URLs to use local IGDB images when available
+        for offer in offers:
+            _transform_image_url(offer)
         
         return offers
         

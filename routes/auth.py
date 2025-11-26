@@ -11,7 +11,6 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
-from database.queries import GET_USER_BY_USERNAME
 from database.db_connect import get_connection
 
 auth_router = APIRouter()
@@ -37,7 +36,7 @@ def get_user_by_username(username: str):
     if not conn:
         return None
     cursor = conn.cursor(dictionary=True)
-    cursor.execute(GET_USER_BY_USERNAME, (username,))
+    cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
     user = cursor.fetchone()
     cursor.close()
     conn.close()
@@ -119,13 +118,3 @@ async def login(request: LoginRequest):
         "username": user["username"],
         "role": user["role"]
     }
-
-@auth_router.get("/me")
-async def get_me(current_user: dict = Depends(get_current_user)):
-    """Get current user info from token"""
-    return current_user
-
-@auth_router.get("/verify-admin")
-async def verify_admin(current_user: dict = Depends(require_admin)):
-    """Verify admin access"""
-    return {"message": "Admin access verified", "user": current_user}

@@ -21,7 +21,7 @@ from services.steam_service import fetch_steam_topsellers
 from services.deals_service import find_matching_deals
 from services.validation_service import validate_deals_batch
 from services.twitter_service import post_deal_to_twitter
-from services.igdb_data_service import fetch_all_genres, fetch_all_igdb_games
+from services.igdb_data_service import fetch_all_genres, fetch_all_igdb_games, download_igdb_images_for_items
 
 def daily_data_collection():
     """
@@ -206,7 +206,7 @@ def _select_unposted_deal(deals, posted_games_list):
 
 def monthly_igdb_data_collection():
     """
-    Monthly job: Fetch all genres and games from IGDB API
+    Monthly job: Fetch all genres and games from IGDB API, then download images
     Runs once per month at scheduled time
     """
     logger.info("="*60)
@@ -217,14 +217,19 @@ def monthly_igdb_data_collection():
     
     try:
         # Step 1: Fetch all genres
-        logger.info("Step 1/2: Fetching all genres from IGDB...")
+        logger.info("Step 1/3: Fetching all genres from IGDB...")
         fetch_all_genres()
         logger.info("Genres fetch completed")
         
-        # Step 2: Fetch all games
-        logger.info("Step 2/2: Fetching all games from IGDB...")
+        # Step 2: Fetch all games (includes cover image IDs)
+        logger.info("Step 2/3: Fetching all games from IGDB...")
         fetch_all_igdb_games()
         logger.info("Games fetch completed")
+        
+        # Step 3: Download images for games that don't have them yet
+        logger.info("Step 3/3: Downloading images for games without cached images...")
+        download_igdb_images_for_items()
+        logger.info("Image download completed")
         
         end_time = time.time()
         elapsed_time = end_time - start_time
@@ -235,6 +240,8 @@ def monthly_igdb_data_collection():
         
     except Exception as e:
         logger.error(f"Error in monthly IGDB data collection: {e}")
+        import traceback
+        traceback.print_exc()
 
 def _check_and_run_monthly_igdb():
     """

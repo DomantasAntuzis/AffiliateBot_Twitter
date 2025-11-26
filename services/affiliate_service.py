@@ -998,12 +998,13 @@ def _execute_batch_insert(db_connection, query_values, stats):
                (item_id, distributor_id, affiliate_url, image_url, list_price, sale_price, discount, is_valid) 
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                ON DUPLICATE KEY UPDATE 
-               affiliate_url = VALUES(affiliate_url),
-               image_url = VALUES(image_url),
-               list_price = VALUES(list_price),
-               sale_price = VALUES(sale_price),
-               discount = VALUES(discount),
-               is_valid = VALUES(is_valid)""",
+               affiliate_url = IF(is_manually_edited = 0, VALUES(affiliate_url), affiliate_url),
+               image_url = IF(is_manually_edited = 0, VALUES(image_url), image_url),
+               list_price = IF(is_manually_edited = 0, VALUES(list_price), list_price),
+               sale_price = IF(is_manually_edited = 0, VALUES(sale_price), sale_price),
+               discount = IF(is_manually_edited = 0, VALUES(discount), discount),
+               is_valid = IF(is_manually_edited = 0, VALUES(is_valid), is_valid),
+               is_hidden = IF(is_manually_edited = 0, VALUES(is_hidden), is_hidden)""",
             query_values
         )
         db_connection.commit()

@@ -1,5 +1,4 @@
 from requests import post
-import json
 import os
 import time
 import sys
@@ -9,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.db_connect import get_connection, execute_query, execute_many
 from utils.logger import logger
+from services.image_cache_service import download_igdb_image, is_image_cached
 
 
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
@@ -122,7 +122,7 @@ def fetch_all_igdb_games():
     while True:
 
         query = (
-            "fields name,genres,external_games,platforms;"
+            "fields name,genres,external_games,platforms,cover.image_id;"
             f"where game_type = 0 & release_dates.platform = 6;"
             f"limit {limit};"
             f"offset {offset};"
@@ -154,13 +154,21 @@ def fetch_all_igdb_games():
             igdb_ids_to_query = []
 
             for game in games_batch:
-                items_to_insert.append((game['name'], "base game", game["id"]))
+                # Extract cover image_id if available
+                cover_image_id = None
+                if 'cover' in game and game['cover']:
+                    if isinstance(game['cover'], dict) and 'image_id' in game['cover']:
+                        cover_image_id = game['cover']['image_id']
+                    elif isinstance(game['cover'], str):
+                        cover_image_id = game['cover']
+                
+                items_to_insert.append((game['name'], "base game", game["id"], cover_image_id))
                 igdb_ids_to_query.append(game["id"])
 
             # Batch insert all items at once
             try:
                 execute_many(
-                    "INSERT INTO items (title, item_type, igdb_id) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE title = VALUES(title)",
+                    "INSERT INTO items (title, item_type, igdb_id, igdb_cover_image_id) VALUES (%s, %s, %s, %s) ON DUPLICATE KEY UPDATE title = VALUES(title), igdb_cover_image_id = CASE WHEN VALUES(igdb_cover_image_id) IS NOT NULL AND VALUES(igdb_cover_image_id) != '' AND VALUES(igdb_cover_image_id) != '0' THEN CAST(VALUES(igdb_cover_image_id) AS CHAR(100)) ELSE igdb_cover_image_id END",
                     items_to_insert,
                     connection=connection,
                     buffered=True
@@ -254,3 +262,124 @@ def fetch_all_igdb_games():
     connection.close()
     logger.info(f"Finished fetch_all_igdb_games(). Total games fetched: {len(all_games)}")
     return all_games
+
+def download_igdb_images_for_items():
+    """
+    Download IGDB cover images for all items that have igdb_cover_image_id but images not yet downloaded.
+    This can be run separately to download images in the background.
+    """
+    logger.info("Starting download_igdb_images_for_items()")
+    
+    connection = get_connection()
+    if not connection:
+        logger.error("Failed to get database connection")
+        return False
+    
+    try:
+        # Get all items with igdb_cover_image_id that don't have images downloaded yet
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, igdb_cover_image_id 
+            FROM items 
+            WHERE igdb_cover_image_id IS NOT NULL 
+            AND igdb_cover_image_id != ''
+            AND igdb_cover_image_id != '0'
+        """)
+        
+        items = cursor.fetchall()
+        cursor.close()
+        
+        total_items = len(items)
+        downloaded_count = 0
+        skipped_count = 0
+        failed_count = 0
+        
+        logger.info(f"Found {total_items} items with IGDB cover image IDs")
+        
+        if total_items == 0:
+            logger.warning("No items found with IGDB cover image IDs. Make sure fetch_all_igdb_games() has been run first.")
+            connection.close()
+            return False
+        
+        for row in items:
+            item_id = row['id']
+            image_id = row['igdb_cover_image_id']
+            
+            # Skip if image_id is invalid (0, empty, or None)
+            if not image_id or str(image_id).strip() == '0' or str(image_id).strip() == '':
+                skipped_count += 1
+                continue
+            
+            # Convert to string and strip whitespace
+            image_id = str(image_id).strip()
+            
+            # Skip if already cached
+            if is_image_cached(image_id):
+                skipped_count += 1
+                if (skipped_count + downloaded_count) % 100 == 0:
+                    logger.info(f"Processed {skipped_count + downloaded_count}/{total_items} items... ({skipped_count} cached, {downloaded_count} downloaded, {failed_count} failed)")
+                continue
+            
+            # Download image
+            try:
+                result = download_igdb_image(image_id)
+                if result:
+                    downloaded_count += 1
+                    if downloaded_count % 50 == 0:
+                        logger.info(f"Downloaded {downloaded_count}/{total_items} images... ({skipped_count} cached, {failed_count} failed)")
+                else:
+                    failed_count += 1
+                    if failed_count <= 10:  # Log first 10 failures for debugging
+                        logger.warning(f"Failed to download image {image_id} for item {item_id}")
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"Exception downloading image {image_id} for item {item_id}: {e}")
+            
+            # Small delay to avoid rate limiting
+            time.sleep(0.1)
+        
+        logger.info(f"Finished downloading images: {downloaded_count} downloaded, {skipped_count} already cached, {failed_count} failed")
+        connection.close()
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error downloading IGDB images: {e}")
+        import traceback
+        traceback.print_exc()
+        connection.close()
+        return False
+
+def fetch_games_and_download_images():
+    """
+    Complete workflow: Fetch games from IGDB API (including cover image IDs) 
+    and then download all images.
+    Use this if you need to complete a partial data collection.
+    """
+    logger.info("="*60)
+    logger.info("Starting complete IGDB data collection and image download")
+    logger.info("="*60)
+    
+    # Step 1: Fetch games from IGDB API (this will update igdb_cover_image_id for all games)
+    logger.info("Step 1/2: Fetching games from IGDB API...")
+    fetch_all_genres()
+    fetch_all_igdb_games()
+    
+    # Step 2: Download images for all items that now have cover image IDs
+    logger.info("Step 2/2: Downloading images...")
+    download_igdb_images_for_items()
+    
+    logger.info("="*60)
+    logger.info("Complete workflow finished!")
+    logger.info("="*60)
+
+if __name__ == "__main__":
+    # Allow manual execution for testing
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "download-images":
+        download_igdb_images_for_items()
+    elif len(sys.argv) > 1 and sys.argv[1] == "complete":
+        fetch_games_and_download_images()
+    else:
+        # Run normal data collection
+        fetch_all_genres()
+        fetch_all_igdb_games()

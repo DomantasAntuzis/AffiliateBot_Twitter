@@ -1,12 +1,12 @@
 """
 Admin API endpoints for managing offers
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import mysql.connector
 from database.db_connect import get_connection
-from routes.auth import require_admin, get_current_user
+from routes.auth import require_admin
 
 admin_router = APIRouter()
 
@@ -78,6 +78,9 @@ async def update_offer(
         if not update_fields:
             raise HTTPException(status_code=400, detail="No fields to update")
         
+        # Mark as manually edited to protect from automated updates
+        update_fields.append("is_manually_edited = 1")
+        
         # Update the offer
         update_query = f"UPDATE offers SET {', '.join(update_fields)} WHERE id = %s"
         params.append(offer_id)
@@ -146,8 +149,9 @@ async def delete_offer(
             cursor.close()
             raise HTTPException(status_code=404, detail="Offer not found")
         
-        # Delete the offer
-        cursor.execute("DELETE FROM offers WHERE id = %s", (offer_id,))
+        # Soft delete: mark as hidden instead of actually deleting
+        # This prevents daily collection from re-inserting it
+        cursor.execute("UPDATE offers SET is_hidden = 1 WHERE id = %s", (offer_id,))
         db.commit()
         cursor.close()
         
