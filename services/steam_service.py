@@ -175,10 +175,48 @@ def _parse_price(price_str):
     except Exception:
         return 0.00
 
+def _clean_title(title):
+    """
+    Remove emojis and special characters that might cause encoding issues, and truncate if too long
+    
+    Args:
+        title: Game title string
+    
+    Returns:
+        str: Cleaned title
+    """
+    import re
+    
+    # Remove emojis (4-byte UTF-8 characters)
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+        "\U0001FA00-\U0001FA6F"  # Chess Symbols
+        "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
+        "]+", 
+        flags=re.UNICODE
+    )
+    cleaned = emoji_pattern.sub('', title)
+    # Remove any remaining 4-byte UTF-8 characters
+    cleaned = cleaned.encode('utf-8', 'ignore').decode('utf-8')
+    cleaned = cleaned.strip()
+    
+    # Truncate to 255 characters (database column limit)
+    if len(cleaned) > 255:
+        cleaned = cleaned[:255]
+    
+    return cleaned
+    
 def _save_to_database(games):
     """
     Save games to topsellers database table
-    First empties the table, then inserts new data with ranking as ID
+    Validates data first, then clears table and inserts new data with ranking as ID
     
     Args:
         games: List of game dictionaries (ordered by ranking)
@@ -186,49 +224,9 @@ def _save_to_database(games):
     Returns:
         bool: True if successful, False otherwise
     """
-    import re
-    
-    def _clean_title(title):
-        """Remove emojis and special characters that might cause encoding issues, and truncate if too long"""
-        # Remove emojis (4-byte UTF-8 characters)
-        emoji_pattern = re.compile(
-            "["
-            "\U0001F600-\U0001F64F"  # emoticons
-            "\U0001F300-\U0001F5FF"  # symbols & pictographs
-            "\U0001F680-\U0001F6FF"  # transport & map symbols
-            "\U0001F1E0-\U0001F1FF"  # flags (iOS)
-            "\U00002702-\U000027B0"
-            "\U000024C2-\U0001F251"
-            "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
-            "\U0001FA00-\U0001FA6F"  # Chess Symbols
-            "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
-            "]+", 
-            flags=re.UNICODE
-        )
-        cleaned = emoji_pattern.sub('', title)
-        # Remove any remaining 4-byte UTF-8 characters
-        cleaned = cleaned.encode('utf-8', 'ignore').decode('utf-8')
-        cleaned = cleaned.strip()
-        
-        # Truncate to 255 characters (database column limit)
-        if len(cleaned) > 255:
-            cleaned = cleaned[:255]
-        
-        return cleaned
     
     try:
-        connection = get_connection()
-        if not connection:
-            logger.error("Failed to get database connection")
-            return False
-        
-        cursor = connection.cursor()
-        
-        # Step 1: Empty the topsellers table (delete all rows)
-        cursor.execute("DELETE FROM topsellers")
-        logger.info("Cleared topsellers table")
-        
-        # Step 2: Prepare data for batch insert
+        # Step 1: Validate and prepare data FIRST (before clearing table)
         # ID represents ranking (1-500), title is the game name, price is decimal(10,2)
         # Skip games with "Free" prices since hidef2p=1 should prevent free games
         insert_values = []
@@ -259,7 +257,24 @@ def _save_to_database(games):
             insert_values.append((ranking, cleaned_title, price_value))
             ranking += 1
         
-        # Step 3: Batch insert new data
+        # Step 2: Only proceed if we have valid data to insert
+        if not insert_values:
+            logger.error("No valid games to insert, keeping existing topsellers data")
+            return False
+        
+        # Step 3: Get database connection and clear table (only after validation)
+        connection = get_connection()
+        if not connection:
+            logger.error("Failed to get database connection")
+            return False
+        
+        cursor = connection.cursor()
+        
+        # Step 4: Empty the topsellers table (delete all rows)
+        cursor.execute("DELETE FROM topsellers")
+        logger.info("Cleared topsellers table")
+        
+        # Step 5: Batch insert new data
         insert_query = "INSERT INTO topsellers (id, title, price) VALUES (%s, %s, %s)"
         execute_many(insert_query, insert_values, connection=connection)
         

@@ -9,406 +9,474 @@ from database.db_connect import get_connection
 from typing import Generator, Optional, List
 from services.image_cache_service import is_image_cached
 
+# Try to import Levenshtein for fuzzy matching, fallback to basic if not available
+try:
+    from Levenshtein import ratio, distance
+    LEVENSHTEIN_AVAILABLE = True
+except ImportError:
+    LEVENSHTEIN_AVAILABLE = False
+    # Fallback: simple character-based similarity
+    def ratio(s1: str, s2: str) -> float:
+        """Simple similarity ratio fallback"""
+        if not s1 or not s2:
+            return 0.0
+        s1_set = set(s1.lower())
+        s2_set = set(s2.lower())
+        if not s1_set:
+            return 0.0
+        return len(s1_set & s2_set) / len(s1_set)
+
 router = APIRouter()
 
 # Get API base URL from environment or use default
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8001")
 
 def _transform_image_url(offer: dict) -> dict:
-    """
-    Transform image_url to use local IGDB image if available, otherwise keep original affiliate image
-    
-    Args:
-        offer: Offer dictionary with image_url and igdb_cover_image_id
-    
-    Returns:
-        dict: Modified offer with updated image_url
-    """
-    igdb_image_id = offer.get('igdb_cover_image_id')
-    
-    # Use local IGDB image if available and cached
-    if igdb_image_id and igdb_image_id != '0' and igdb_image_id != '':
-        igdb_image_id = str(igdb_image_id).strip()
-        if is_image_cached(igdb_image_id):
-            offer['image_url'] = f"{API_BASE_URL}/api/igdb-images/{igdb_image_id}.jpg"
-    
-    # Remove igdb_cover_image_id from response (internal use only)
-    offer.pop('igdb_cover_image_id', None)
-    
-    return offer
+        """
+        Transform image_url to use local IGDB image if available, otherwise keep original affiliate image
+        
+        Args:
+                offer: Offer dictionary with image_url and igdb_cover_image_id
+        
+        Returns:
+                dict: Modified offer with updated image_url
+        """
+        igdb_image_id = offer.get('igdb_cover_image_id')
+        
+        # Use local IGDB image if available and cached
+        if igdb_image_id and igdb_image_id != '0' and igdb_image_id != '':
+                igdb_image_id = str(igdb_image_id).strip()
+                if is_image_cached(igdb_image_id):
+                        offer['image_url'] = f"{API_BASE_URL}/api/igdb-images/{igdb_image_id}.jpg"
+        
+        # Remove igdb_cover_image_id from response (internal use only)
+        offer.pop('igdb_cover_image_id', None)
+        
+        return offer
 
 def _normalize_title_for_matching(title: str) -> str:
-    """
-    Normalize title for fuzzy matching (same logic as in affiliate_service.py)
-    Removes punctuation and normalizes whitespace
-    """
-    # Convert to lowercase
-    normalized = title.lower().strip()
-    
-    # Replace common punctuation with spaces (hyphens, colons, semicolons, etc.)
-    normalized = re.sub(r'[-:;–—]', ' ', normalized)
-    
-    # Remove other punctuation (keep apostrophes for names like "O'Brien")
-    normalized = re.sub(r'[^\w\s\']', '', normalized)
-    
-    # Collapse multiple spaces to single space
-    normalized = re.sub(r'\s+', ' ', normalized)
-    
-    # Trim
-    normalized = normalized.strip()
-    
-    return normalized
+        """
+        Normalize title for fuzzy matching (same logic as in affiliate_service.py)
+        Removes punctuation and normalizes whitespace
+        """
+        # Convert to lowercase
+        normalized = title.lower().strip()
+        
+        # Replace common punctuation with spaces (hyphens, colons, semicolons, etc.)
+        normalized = re.sub(r'[-:;–—]', ' ', normalized)
+        
+        # Remove other punctuation (keep apostrophes for names like "O'Brien")
+        normalized = re.sub(r'[^\w\s\']', '', normalized)
+        
+        # Collapse multiple spaces to single space
+        normalized = re.sub(r'\s+', ' ', normalized)
+        
+        # Trim
+        normalized = normalized.strip()
+        
+        return normalized
 
 def get_db() -> Generator:
-    """Dependency for database connection"""
-    connection = get_connection()
-    try:
-        yield connection
-    finally:
-        if connection and connection.is_connected():
-            connection.close()
+        """Dependency for database connection"""
+        connection = get_connection()
+        try:
+                yield connection
+        finally:
+                if connection and connection.is_connected():
+                        connection.close()
 
 @router.get("/genres")
 async def get_genres(db = Depends(get_db)):
-    """
-    Get all available genres
-    
-    Returns:
-        List of genres with id and name
-    """
-    if db is None:
-        raise HTTPException(status_code=500, detail="Database connection failed")
-    
-    try:
-        cursor = db.cursor(dictionary=True)
-        query = "SELECT id, name FROM genres ORDER BY name ASC"
-        cursor.execute(query)
-        genres = cursor.fetchall()
-        cursor.close()
-        return genres
-    except mysql.connector.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        """
+        Get all available genres
+        
+        Returns:
+                List of genres with id and name
+        """
+        if db is None:
+                raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        try:
+                cursor = db.cursor(dictionary=True)
+                query = "SELECT id, name FROM genres ORDER BY name ASC"
+                cursor.execute(query)
+                genres = cursor.fetchall()
+                cursor.close()
+                return genres
+        except mysql.connector.Error as e:
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @router.get("/offers_list")
 async def get_offers(
-    distributor: Optional[List[str]] = Query(None, description="Filter by distributor name(s). Example: ?distributor=GOG&distributor=YUPLAY"),
-    genre: Optional[List[int]] = Query(None, description="Filter by genre ID(s). Example: ?genre=1&genre=2"),
-    sort_by: Optional[str] = Query(None, description="Sort by discount: 'discount_desc' or 'discount_asc'"),
-    limit: int = Query(60, ge=1, le=200, description="Number of items to return"),
-    offset: int = Query(0, ge=0, description="Number of items to skip"),
-    db = Depends(get_db)
+        distributor: Optional[List[str]] = Query(None, description="Filter by distributor name(s). Example: ?distributor=GOG&distributor=YUPLAY"),
+        genre: Optional[List[int]] = Query(None, description="Filter by genre ID(s). Example: ?genre=1&genre=2"),
+        sort_by: Optional[str] = Query(None, description="Sort by discount: 'discount_desc' or 'discount_asc'"),
+        limit: int = Query(60, ge=1, le=200, description="Number of items to return"),
+        offset: int = Query(0, ge=0, description="Number of items to skip"),
+        db = Depends(get_db)
 ):
-    """
-    Get all offers from the offers table with optional filtering and sorting
-    
-    Args:
-        distributor: Optional list of distributor names to filter by (e.g., "GOG", "YUPLAY", "GamersGate", "IndieGala")
-        sort_by_top_sellers: If True, prioritize offers matching Steam's top 500 selling games
-        db: Database connection dependency
-    
-    Returns:
-        List of offers matching the filters with item and distributor details
-        
-    Examples:
-        - Get all offers: /api/offers_list
-        - Get only GOG offers: /api/offers_list?distributor=GOG
-    """
-    if db is None:
-        raise HTTPException(status_code=500, detail="Database connection failed")
-    
-    try:
-        cursor = db.cursor(dictionary=True)
-        
-        # Build query with optional filters
-        query = """
-            SELECT DISTINCT
-                o.id,
-                o.item_id,
-                o.distributor_id,
-                o.affiliate_url,
-                o.image_url,
-                o.list_price,
-                o.sale_price,
-                o.discount,
-                o.is_valid,
-                i.title as item_title,
-                i.igdb_cover_image_id,
-                d.name as distributor_name
-            FROM offers o
-            LEFT JOIN items i ON o.item_id = i.id
-            LEFT JOIN distributors d ON o.distributor_id = d.id
         """
+        Get all offers from the offers table with optional filtering and sorting
         
-        # Add JOIN for genre filtering if needed
-        where_clauses = ["o.is_hidden = 0"]  # Always filter out hidden items
-        params = []
+        Args:
+                distributor: Optional list of distributor names to filter by (e.g., "GOG", "YUPLAY", "GamersGate", "IndieGala")
+                sort_by_top_sellers: If True, prioritize offers matching Steam's top 500 selling games
+                db: Database connection dependency
         
-        if genre and len(genre) > 0:
-            query += " INNER JOIN item_genres ig ON o.item_id = ig.item_id"
-            placeholders = ','.join(['%s'] * len(genre))
-            where_clauses.append(f"ig.genre_id IN ({placeholders})")
-            params.extend(genre)
+        Returns:
+                List of offers matching the filters with item and distributor details
+                
+        Examples:
+                - Get all offers: /api/offers_list
+                - Get only GOG offers: /api/offers_list?distributor=GOG
+        """
+        if db is None:
+                raise HTTPException(status_code=500, detail="Database connection failed")
         
-        # Add distributor filter if provided
-        if distributor and len(distributor) > 0:
-            placeholders = ','.join(['%s'] * len(distributor))
-            where_clauses.append(f"d.name IN ({placeholders})")
-            params.extend(distributor)
-        
-        # Add WHERE clause (always includes is_hidden = 0)
-        query += " WHERE " + " AND ".join(where_clauses)
-        # Note: is_hidden = 0 is already in WHERE clause above
-        
-        # Add sorting
-        if sort_by == "discount_desc":
-            query += " ORDER BY o.discount DESC, o.id ASC"
-        elif sort_by == "discount_asc":
-            query += " ORDER BY o.discount ASC, o.id ASC"
-        else:
-            # Deterministic shuffle - mixes distributors and games evenly
-            # Uses modulo hash for consistent ordering per day/session
-            query += " ORDER BY MOD(o.id * 7919, 1000000), o.discount DESC, d.name"
-        
-        query += " LIMIT %s OFFSET %s"
-        
-        cursor.execute(query, params + [limit, offset])
-        offers = cursor.fetchall()
-        cursor.close()
-        
-        # Transform image URLs to use local IGDB images when available
-        for offer in offers:
-            _transform_image_url(offer)
-        
-        return offers
-        
-    except mysql.connector.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        try:
+                cursor = db.cursor(dictionary=True)
+                
+                # Build query with optional filters
+                query = """
+                        SELECT DISTINCT
+                                o.id,
+                                o.item_id,
+                                o.distributor_id,
+                                o.affiliate_url,
+                                o.image_url,
+                                o.list_price,
+                                o.sale_price,
+                                o.discount,
+                                o.is_valid,
+                                i.title as item_title,
+                                i.igdb_cover_image_id,
+                                d.name as distributor_name
+                        FROM offers o
+                        LEFT JOIN items i ON o.item_id = i.id
+                        LEFT JOIN distributors d ON o.distributor_id = d.id
+                """
+                
+                # Add JOIN for genre filtering if needed
+                where_clauses = ["o.is_hidden = 0"]  # Always filter out hidden items
+                params = []
+                
+                if genre and len(genre) > 0:
+                        query += " INNER JOIN item_genres ig ON o.item_id = ig.item_id"
+                        placeholders = ','.join(['%s'] * len(genre))
+                        where_clauses.append(f"ig.genre_id IN ({placeholders})")
+                        params.extend(genre)
+                
+                # Add distributor filter if provided
+                if distributor and len(distributor) > 0:
+                        placeholders = ','.join(['%s'] * len(distributor))
+                        where_clauses.append(f"d.name IN ({placeholders})")
+                        params.extend(distributor)
+                
+                # Add WHERE clause (always includes is_hidden = 0)
+                query += " WHERE " + " AND ".join(where_clauses)
+                # Note: is_hidden = 0 is already in WHERE clause above
+                
+                # Add sorting
+                if sort_by == "discount_desc":
+                        query += " ORDER BY o.discount DESC, o.id ASC"
+                elif sort_by == "discount_asc":
+                        query += " ORDER BY o.discount ASC, o.id ASC"
+                else:
+                        # Deterministic shuffle - mixes distributors and games evenly
+                        # Uses modulo hash for consistent ordering per day/session
+                        query += " ORDER BY MOD(o.id * 7919, 1000000), o.discount DESC, d.name"
+                
+                query += " LIMIT %s OFFSET %s"
+                
+                cursor.execute(query, params + [limit, offset])
+                offers = cursor.fetchall()
+                cursor.close()
+                
+                # Transform image URLs to use local IGDB images when available
+                for offer in offers:
+                    _transform_image_url(offer)
+                
+                return offers
+                
+        except mysql.connector.Error as e:
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @router.get("/topsellers")
 async def get_topsellers(
-    genre: Optional[List[int]] = Query(None, description="Filter by genre ID(s). Example: ?genre=1&genre=2"),
-    limit: int = Query(60, ge=1, le=200, description="Number of items to return"),
-    offset: int = Query(0, ge=0, description="Number of items to skip"),
-    db = Depends(get_db)
+        genre: Optional[List[int]] = Query(None, description="Filter by genre ID(s). Example: ?genre=1&genre=2"),
+        limit: int = Query(60, ge=1, le=200, description="Number of items to return"),
+        offset: int = Query(0, ge=0, description="Number of items to skip"),
+        db = Depends(get_db)
 ):
-    """
-    Get offers for games that are in Steam's top 500 sellers list
-    
-    Args:
-        distributor: Optional list of distributor names to filter by (e.g., "GOG", "YUPLAY", "GamersGate", "IndieGala")
-        db: Database connection dependency
-    
-    Returns:
-        List of offers for top seller games with item and distributor details
-        
-    Examples:
-        - Get all top seller offers: /api/topsellers
-        - Get only GOG top seller offers: /api/topsellers?distributor=GOG
-        - Get GOG and YUPLAY top seller offers: /api/topsellers?distributor=GOG&distributor=YUPLAY
-    """
-    if db is None:
-        raise HTTPException(status_code=500, detail="Database connection failed")
-    
-    try:
-        cursor = db.cursor(dictionary=True)
-        
-        # Query: match topsellers with offers
-        query = """
-            SELECT DISTINCT
-                o.id,
-                o.item_id,
-                o.distributor_id,
-                o.affiliate_url,
-                o.image_url,
-                o.list_price,
-                o.sale_price,
-                o.discount,
-                o.is_valid,
-                i.title as item_title,
-                i.igdb_cover_image_id,
-                d.name as distributor_name,
-                ts.id as topseller_rank
-            FROM offers o
-            INNER JOIN items i ON o.item_id = i.id
-            INNER JOIN distributors d ON o.distributor_id = d.id
-            INNER JOIN topsellers ts ON i.title = ts.title
         """
+        Get offers for games that are in Steam's top 500 sellers list
         
-        params = []
-        where_clauses = ["o.is_valid = 1", "o.is_hidden = 0"]
+        Args:
+                distributor: Optional list of distributor names to filter by (e.g., "GOG", "YUPLAY", "GamersGate", "IndieGala")
+                db: Database connection dependency
         
-        # Add genre filter if provided
-        if genre and len(genre) > 0:
-            query += " INNER JOIN item_genres ig ON o.item_id = ig.item_id"
-            placeholders = ','.join(['%s'] * len(genre))
-            where_clauses.append(f"ig.genre_id IN ({placeholders})")
-            params.extend(genre)
+        Returns:
+                List of offers for top seller games with item and distributor details
+                
+        Examples:
+                - Get all top seller offers: /api/topsellers
+                - Get only GOG top seller offers: /api/topsellers?distributor=GOG
+                - Get GOG and YUPLAY top seller offers: /api/topsellers?distributor=GOG&distributor=YUPLAY
+        """
+        if db is None:
+                raise HTTPException(status_code=500, detail="Database connection failed")
         
-        query += " WHERE " + " AND ".join(where_clauses)
-        # Keep topseller ranking but shuffle distributors within each game group
-        query += " ORDER BY ts.id ASC, MOD(o.id, 10), d.name LIMIT %s OFFSET %s"
-        
-        cursor.execute(query, params + [limit, offset])
-        offers = cursor.fetchall()
-        cursor.close()
-        
-        # Transform image URLs to use local IGDB images when available
-        for offer in offers:
-            _transform_image_url(offer)
-        
-        return offers
-        
-    except mysql.connector.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        try:
+                cursor = db.cursor(dictionary=True)
+                
+                # Query: match topsellers with offers
+                query = """
+                        SELECT DISTINCT
+                                o.id,
+                                o.item_id,
+                                o.distributor_id,
+                                o.affiliate_url,
+                                o.image_url,
+                                o.list_price,
+                                o.sale_price,
+                                o.discount,
+                                o.is_valid,
+                                i.title as item_title,
+                                i.igdb_cover_image_id,
+                                d.name as distributor_name,
+                                ts.id as topseller_rank
+                        FROM offers o
+                        INNER JOIN items i ON o.item_id = i.id
+                        INNER JOIN distributors d ON o.distributor_id = d.id
+                        INNER JOIN topsellers ts ON i.title = ts.title
+                """
+                
+                params = []
+                where_clauses = ["o.is_valid = 1", "o.is_hidden = 0"]
+                
+                # Add genre filter if provided
+                if genre and len(genre) > 0:
+                        query += " INNER JOIN item_genres ig ON o.item_id = ig.item_id"
+                        placeholders = ','.join(['%s'] * len(genre))
+                        where_clauses.append(f"ig.genre_id IN ({placeholders})")
+                        params.extend(genre)
+                
+                query += " WHERE " + " AND ".join(where_clauses)
+                # Keep topseller ranking but shuffle distributors within each game group
+                query += " ORDER BY ts.id ASC, MOD(o.id, 10), d.name LIMIT %s OFFSET %s"
+                
+                cursor.execute(query, params + [limit, offset])
+                offers = cursor.fetchall()
+                cursor.close()
+                
+                # Transform image URLs to use local IGDB images when available
+                for offer in offers:
+                        _transform_image_url(offer)
+                
+                return offers
+                
+        except mysql.connector.Error as e:
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @router.get("/search")
 async def search_offers(
-    q: str = Query("", description="Search query string"),
-    distributor: Optional[List[str]] = Query(None, description="Filter by distributor name(s). Example: ?distributor=GOG"),
-    genre: Optional[List[int]] = Query(None, description="Filter by genre ID(s). Example: ?genre=1&genre=2"),
-    sort_by: Optional[str] = Query(None, description="Sort by discount: 'discount_desc' or 'discount_asc'"),
-    limit: int = Query(10, ge=1, le=200, description="Number of items to return (default 10 for dropdown, up to 200 for search page)"),
-    offset: int = Query(0, ge=0, description="Number of items to skip"),
-    db = Depends(get_db)
+        q: str = Query("", description="Search query string"),
+        sort_by: Optional[str] = Query(None, description="Sort by discount: 'discount_desc' or 'discount_asc'"),
+        limit: int = Query(10, ge=1, le=200, description="Number of items to return (default 10 for dropdown, up to 200 for search page)"),
+        offset: int = Query(0, ge=0, description="Number of items to skip"),
+        db = Depends(get_db)
 ):
-    """
-    Search offers by game title using fuzzy matching
-    Uses normalized title matching for better results
-    
-    Args:
-        q: Search query string (required)
-        distributor: Optional distributor filter
-        genre: Optional genre filter
-        sort_by: Optional sort order
-        limit: Number of results to return (default 10 for dropdown)
-        offset: Pagination offset
-        db: Database connection
-    
-    Returns:
-        List of offers matching the search query
-        
-    Examples:
-        - Search for "cyberpunk": /api/search?q=cyberpunk
-        - Search with distributor filter: /api/search?q=witcher&distributor=GOG
-    """
-    if db is None:
-        raise HTTPException(status_code=500, detail="Database connection failed")
-    
-    if not q or not q.strip():
-        return []
-    
-    try:
-        cursor = db.cursor(dictionary=True)
-        
-        # Normalize search query using the same normalization function
-        normalized_query = _normalize_title_for_matching(q.strip())
-        
-        # Split into words for better fuzzy matching
-        query_words = [w for w in normalized_query.split() if len(w) >= 2]
-        
-        if not query_words:
-            return []
-        
-        # Build query with fuzzy matching
-        query = """
-            SELECT DISTINCT
-                o.id,
-                o.item_id,
-                o.distributor_id,
-                o.affiliate_url,
-                o.image_url,
-                o.list_price,
-                o.sale_price,
-                o.discount,
-                o.is_valid,
-                i.title as item_title,
-                i.igdb_cover_image_id,
-                d.name as distributor_name
-            FROM offers o
-            LEFT JOIN items i ON o.item_id = i.id
-            LEFT JOIN distributors d ON o.distributor_id = d.id
         """
+        Search offers by game title using fuzzy matching
+        Uses normalized title matching for better results
         
-        where_clauses = ["o.is_hidden = 0"]  # Always filter out hidden items
-        params = []
+        Args:
+                q: Search query string (required)
+                sort_by: Optional sort order
+                limit: Number of results to return (default 10 for dropdown)
+                offset: Pagination offset
+                db: Database connection
         
-        # Add genre filter if needed
-        if genre and len(genre) > 0:
-            query += " INNER JOIN item_genres ig ON o.item_id = ig.item_id"
-            placeholders = ','.join(['%s'] * len(genre))
-            where_clauses.append(f"ig.genre_id IN ({placeholders})")
-            params.extend(genre)
+        Returns:
+                List of offers matching the search query
+                
+        Examples:
+                - Search for "cyberpunk": /api/search?q=cyberpunk
+                - Search with sorting: /api/search?q=witcher&sort_by=discount_desc
+        """
+        if db is None:
+                raise HTTPException(status_code=500, detail="Database connection failed")
         
-        # Build search condition: match normalized title
-        # Create a pattern that matches the normalized query
-        search_pattern = f"%{normalized_query}%"
+        if not q or not q.strip():
+                return []
         
-        # Also match individual words for better fuzzy matching
-        word_patterns = [f"%{word}%" for word in query_words[:5]]  # Limit to 5 words
-        
-        # Combine patterns: match full query OR individual words
-        # Use normalized title matching in SQL (similar to Python normalization)
-        search_conditions = [
-            "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(i.title, '-', ' '), ':', ' '), ';', ' '), '–', ' ')) LIKE %s"
-        ]
-        params.append(search_pattern)
-        
-        # Add individual word matches
-        for word_pattern in word_patterns:
-            search_conditions.append(
-                "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(i.title, '-', ' '), ':', ' '), ';', ' '), '–', ' ')) LIKE %s"
-            )
-            params.append(word_pattern)
-        
-        where_clauses.append(f"({' OR '.join(search_conditions)})")
-        
-        # Add distributor filter if provided
-        if distributor and len(distributor) > 0:
-            placeholders = ','.join(['%s'] * len(distributor))
-            where_clauses.append(f"d.name IN ({placeholders})")
-            params.extend(distributor)
-        
-        # Add WHERE clause
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
-        
-        # Add sorting
-        if sort_by == "discount_desc":
-            query += " ORDER BY o.discount DESC, o.id ASC"
-        elif sort_by == "discount_asc":
-            query += " ORDER BY o.discount ASC, o.id ASC"
-        else:
-            # Default: prioritize exact matches, then by ID
-            # Use parameterized query for safety
-            query += " ORDER BY "
-            query += f"CASE WHEN LOWER(REPLACE(REPLACE(REPLACE(REPLACE(i.title, '-', ' '), ':', ' '), ';', ' '), '–', ' ')) LIKE %s THEN 1 "
-            query += f"WHEN LOWER(REPLACE(REPLACE(REPLACE(REPLACE(i.title, '-', ' '), ':', ' '), ';', ' '), '–', ' ')) LIKE %s THEN 2 "
-            query += "ELSE 3 END, "
-            query += "o.id ASC"
-            # Add the patterns for ORDER BY (exact start match, then contains match)
-            params.append(f"{normalized_query}%")  # Starts with query
-            params.append(search_pattern)  # Contains query
-        
-        query += " LIMIT %s OFFSET %s"
-        
-        cursor.execute(query, params + [limit, offset])
-        offers = cursor.fetchall()
-        cursor.close()
-        
-        # Transform image URLs to use local IGDB images when available
-        for offer in offers:
-            _transform_image_url(offer)
-        
-        return offers
-        
-    except mysql.connector.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        try:
+                cursor = db.cursor(dictionary=True)
+                
+                # Normalize search query using the same normalization function
+                normalized_query = _normalize_title_for_matching(q.strip())
+                
+                # Split into words for better fuzzy matching
+                query_words = [w for w in normalized_query.split() if len(w) >= 2]
+                
+                if not query_words:
+                        return []
+                
+                # Build query to fetch broad candidate set for Levenshtein scoring
+                # Strategy: Match on word prefixes/stems to get candidates, then Levenshtein finds typos
+                # Fetch large candidate set (up to 2000) to ensure we catch typo matches
+                initial_limit = 2000
+                
+                # Build LIKE patterns: match full query OR individual words OR word prefixes
+                # This gets a broad candidate set that includes potential typo matches
+                search_pattern = f"%{normalized_query}%"
+                word_patterns = [f"%{word}%" for word in query_words[:5]]  # Limit to 5 words
+                
+                # Also add prefix matches (first 3+ chars of each word) to catch typos
+                # e.g., "cyberpank" -> match titles with "cyber" prefix
+                prefix_patterns = []
+                for word in query_words:
+                    if len(word) >= 3:
+                        prefix_patterns.append(f"%{word[:3]}%")  # First 3 chars
+                    if len(word) >= 4:
+                        prefix_patterns.append(f"%{word[:4]}%")  # First 4 chars
+                
+                # Add character n-gram patterns for better typo detection
+                # Extract 3-4 character sequences from the query to catch similar words
+                ngram_patterns = []
+                query_normalized_lower = normalized_query.lower()
+                # Generate 3-char n-grams from the full query
+                for i in range(len(query_normalized_lower) - 2):
+                    ngram = query_normalized_lower[i:i+3]
+                    if len(ngram.strip()) >= 3:
+                        ngram_patterns.append(f"%{ngram}%")
+                # Limit n-grams to avoid too many patterns
+                ngram_patterns = list(set(ngram_patterns))[:15]  # Unique, max 15
+                
+                # Build search conditions using LIKE (matches anywhere in title)
+                search_conditions = [
+                    "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(i.title, '-', ' '), ':', ' '), ';', ' '), '–', ' ')) LIKE %s"
+                ]
+                params = [search_pattern]
+                
+                # Add individual word matches
+                for word_pattern in word_patterns:
+                    search_conditions.append(
+                        "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(i.title, '-', ' '), ':', ' '), ';', ' '), '–', ' ')) LIKE %s"
+                    )
+                    params.append(word_pattern)
+                
+                # Add prefix matches for typo tolerance
+                for prefix_pattern in prefix_patterns[:10]:  # Limit prefixes
+                    search_conditions.append(
+                        "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(i.title, '-', ' '), ':', ' '), ';', ' '), '–', ' ')) LIKE %s"
+                    )
+                    params.append(prefix_pattern)
+                
+                # Add n-gram patterns for typo detection
+                for ngram_pattern in ngram_patterns:
+                    search_conditions.append(
+                        "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(i.title, '-', ' '), ':', ' '), ';', ' '), '–', ' ')) LIKE %s"
+                    )
+                    params.append(ngram_pattern)
+                
+                query = """
+                    SELECT DISTINCT
+                        o.id, o.item_id, o.distributor_id, o.affiliate_url,
+                        o.image_url, o.list_price, o.sale_price, o.discount,
+                        o.is_valid, i.title as item_title, i.igdb_cover_image_id,
+                        d.name as distributor_name
+                    FROM offers o
+                    LEFT JOIN items i ON o.item_id = i.id
+                    LEFT JOIN distributors d ON o.distributor_id = d.id
+                    WHERE o.is_hidden = 0
+                    AND ({})
+                    LIMIT %s
+                """.format(' OR '.join(search_conditions))
+                
+                params.append(initial_limit)
+                
+                cursor.execute(query, params)
+                offers = cursor.fetchall()
+                cursor.close()
+                
+                # Apply Levenshtein distance scoring for typo tolerance and ranking
+                # Score ALL candidates - this is where typos get caught!
+                scored_offers = []
+                normalized_title_cache = {}
+                
+                for offer in offers:
+                        title = offer.get('item_title', '')
+                        if not title:
+                                continue
+                        
+                        # Normalize title for comparison
+                        if title not in normalized_title_cache:
+                                normalized_title_cache[title] = _normalize_title_for_matching(title)
+                        normalized_title = normalized_title_cache[title]
+                        
+                        # Calculate Levenshtein similarity (0.0 to 1.0)
+                        # This is the KEY: "cyberpank" vs "cyberpunk" will have high similarity (~0.85)
+                        levenshtein_score = ratio(normalized_query, normalized_title)
+                        
+                        # Base score is Levenshtein similarity (handles typos)
+                        combined_score = levenshtein_score
+                        
+                        # Bonus for exact phrase match anywhere in title
+                        if normalized_query in normalized_title:
+                                combined_score += 0.25
+                        
+                        # Bonus for starts with query
+                        if normalized_title.startswith(normalized_query):
+                                combined_score += 0.2
+                        
+                        # Bonus for all query words present
+                        query_word_count = len(query_words)
+                        matched_words = sum(1 for word in query_words if word in normalized_title)
+                        if query_word_count > 0:
+                                word_match_bonus = (matched_words / query_word_count) * 0.15
+                                combined_score += word_match_bonus
+                        
+                        # Cap at 1.0
+                        combined_score = min(combined_score, 1.0)
+                        
+                        # Filter: include results with reasonable similarity
+                        # Lower threshold (0.4) allows typo matches while filtering noise
+                        # Or high Levenshtein score (0.6+) indicates good typo match
+                        if combined_score >= 0.4 or levenshtein_score >= 0.6:
+                                offer['combined_relevance_score'] = combined_score
+                                offer['levenshtein_score'] = levenshtein_score
+                                scored_offers.append(offer)
+                
+                # Sort by combined score (descending)
+                scored_offers.sort(key=lambda x: x['combined_relevance_score'], reverse=True)
+                
+                # Apply discount sorting if requested
+                if sort_by == "discount_desc":
+                        scored_offers.sort(key=lambda x: (x.get('discount', 0), x['combined_relevance_score']), reverse=True)
+                elif sort_by == "discount_asc":
+                        scored_offers.sort(key=lambda x: (x.get('discount', 0), -x['combined_relevance_score']))
+                
+                # Apply pagination
+                paginated_offers = scored_offers[offset:offset + limit]
+                
+                # Remove internal scoring fields before returning
+                for offer in paginated_offers:
+                        offer.pop('ft_relevance_score', None)
+                        offer.pop('combined_relevance_score', None)
+                        offer.pop('levenshtein_score', None)
+                        _transform_image_url(offer)
+                
+                return paginated_offers
+                
+        except mysql.connector.Error as e:
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 

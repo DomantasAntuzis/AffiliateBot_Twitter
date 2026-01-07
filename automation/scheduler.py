@@ -260,7 +260,7 @@ def setup_scheduler():
         None
     """
    
-    now = datetime.datetime.now() + datetime.timedelta(minutes=2)
+    now = datetime.datetime.now() + datetime.timedelta(minutes=1)
     run_time = now.strftime("%H:%M")
     
     schedule.every().day.at(run_time).do(daily_data_collection)
