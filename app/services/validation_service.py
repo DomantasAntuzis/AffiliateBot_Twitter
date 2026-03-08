@@ -8,37 +8,31 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
-import json
-import csv
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import os
 import sys
 import re
+import json
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 from utils.logger import logger
-from utils.helpers import load_posted_games, save_json_file
+from utils.helpers import get_recent_posted_titles, _get_steam_topsellers, _normalize_title
 
 def validate_deals_batch(deals):
     """
     Validate a batch of deals using parallel processing
     
-    Args:
-        deals: List of deal dictionaries
-    
-    Returns:
-        list: List of valid deals (sorted by source)
     """
     # Load Steam prices for comparison
-    steam_games = _load_steam_prices()
+    steam_games = _get_steam_topsellers()
     
     # Load posted games to skip
-    posted_games_list = load_posted_games(config.POSTED_GAMES_FILE)
+    posted_games_list = get_recent_posted_titles()
     
     valid_deals = []
     
@@ -69,9 +63,6 @@ def validate_deals_batch(deals):
     
     # Post-process: remove duplicates and sort by source
     processed_deals = _postprocess_deals(valid_deals)
-    
-    # Save to JSON file
-    save_json_file(config.VALID_DEALS_JSON, processed_deals)
     
     # Count total deals (not just source groups)
     total_deals = sum(len(group) for group in processed_deals)
@@ -326,34 +317,6 @@ def _handle_gamersgate_age_verification(driver):
     except TimeoutException:
         pass
 
-def _normalize_title_for_matching(title):
-    """
-    Normalize title for fuzzy matching by removing punctuation and normalizing whitespace
-    Same logic as affiliate_service.py for consistency
-    
-    Args:
-        title: Title string to normalize
-    
-    Returns:
-        str: Normalized title for matching
-    """
-    # Convert to lowercase
-    normalized = title.lower().strip()
-    
-    # Replace common punctuation with spaces (hyphens, colons, semicolons, etc.)
-    normalized = re.sub(r'[-:;–—]', ' ', normalized)
-    
-    # Remove other punctuation (keep apostrophes for names like "O'Brien")
-    normalized = re.sub(r'[^\w\s\']', '', normalized)
-    
-    # Collapse multiple spaces to single space
-    normalized = re.sub(r'\s+', ' ', normalized)
-    
-    # Trim
-    normalized = normalized.strip()
-    
-    return normalized
-
 def _compare_prices(title, price, steam_games):
     """
     Compare deal price with Steam price
@@ -368,7 +331,7 @@ def _compare_prices(title, price, steam_games):
         bool: True if deal is cheaper than Steam, False otherwise
     """
     # Normalize title for matching (same as affiliate_service)
-    normalized_title = _normalize_title_for_matching(title)
+    normalized_title = _normalize_title(title)
     
     for s_row in steam_games:
         if len(s_row) >= 2:
@@ -376,7 +339,7 @@ def _compare_prices(title, price, steam_games):
             steam_price = s_row[1]  # decimal(10,2) or None
             
             # Normalize Steam title for matching
-            normalized_steam = _normalize_title_for_matching(steam_title)
+            normalized_steam = _normalize_title(steam_title)
             
             # If titles match, compare prices
             if normalized_title == normalized_steam:
@@ -392,28 +355,6 @@ def _compare_prices(title, price, steam_games):
                     return False
     
     return False
-
-def _load_steam_prices():
-    """Load Steam prices from database"""
-    try:
-        from database.db_connect import get_connection
-        
-        connection = get_connection()
-        if not connection:
-            return []
-        
-        cursor = connection.cursor()
-        cursor.execute("SELECT title, price FROM topsellers ORDER BY id ASC")
-        rows = cursor.fetchall()
-        cursor.close()
-        connection.close()
-        
-        # Convert to list format: [[title, price], [title, price], ...]
-        # price is decimal(10,2) or None for free games
-        return [[row[0], row[1]] for row in rows]
-    except Exception as e:
-        logger.error(f"Error loading Steam prices from database: {e}")
-        return []
 
 def _postprocess_deals(valid_deals):
     """

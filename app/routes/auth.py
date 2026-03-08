@@ -5,13 +5,8 @@ from typing import Optional
 from datetime import datetime, timedelta
 import bcrypt
 from jose import JWTError, jwt
-
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from database.queries.auth import auth_user
 import config
-from database.db_connect import get_connection
 
 auth_router = APIRouter()
 security = HTTPBearer()
@@ -31,15 +26,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 def get_user_by_username(username: str):
-    """Get user from database by username"""
-    conn = get_connection()
-    if not conn:
+    user = auth_user(username)
+    if user is None:
         return None
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
-    user = cursor.fetchone()
-    cursor.close()
-    conn.close()
     return user
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):

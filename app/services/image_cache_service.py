@@ -11,7 +11,7 @@ from typing import Optional
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import config
+import config as config
 from utils.logger import logger
 
 # IGDB images directory

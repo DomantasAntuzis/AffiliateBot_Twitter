@@ -13,36 +13,36 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 from utils.logger import logger
-from database.db_connect import get_connection, execute_many
+from database.queries.steam import replace_topsellers, get_steam_topsellers
 
-def fetch_steam_topsellers():
-    """
-    Fetch Steam top sellers and save to database and CSV
+# def fetch_steam_topsellers():
+#     """
+#     Fetch Steam top sellers and save to database and CSV
     
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    logger.info("Starting Steam top sellers fetch")
+#     Returns:
+#         bool: True if successful, False otherwise
+#     """
+#     logger.info("Starting Steam top sellers fetch")
     
-    topsellers = _fetch_top500_topsellers(
-        cc=config.STEAM_REGION,
-        lang=config.STEAM_LANGUAGE
-    )
+#     topsellers = _fetch_top500_topsellers(
+#         cc=config.STEAM_REGION,
+#         lang=config.STEAM_LANGUAGE
+#     )
     
-    if not topsellers:
-        logger.error("Failed to fetch Steam top sellers")
-        return False
+#     if not topsellers:
+#         logger.error("Failed to fetch Steam top sellers")
+#         return False
     
-    # Save to database (primary storage)
-    db_success = _save_to_database(topsellers)
+#     # Save to database (primary storage)
+#     db_success = _save_to_database(topsellers)
     
-    # Save to CSV (backup)
-    csv_success = _save_to_csv(topsellers)
+#     # Save to CSV (backup)
+#     csv_success = _save_to_csv(topsellers)
     
-    if db_success:
-        logger.info(f"Successfully fetched and saved {len(topsellers)} Steam top sellers to database")
+#     if db_success:
+#         logger.info(f"Successfully fetched and saved {len(topsellers)} Steam top sellers to database")
     
-    return db_success
+#     return db_success
 
 def _fetch_batch(start, count=100, cc="US", lang="en"):
     """
@@ -215,87 +215,46 @@ def _clean_title(title):
     
 def _save_to_database(games):
     """
-    Save games to topsellers database table
-    Validates data first, then clears table and inserts new data with ranking as ID
-    
-    Args:
-        games: List of game dictionaries (ordered by ranking)
-    
-    Returns:
-        bool: True if successful, False otherwise
+    Save games to topsellers database table.
+    Validates data first, then replaces table contents with new data (ranking as id).
     """
-    
     try:
-        # Step 1: Validate and prepare data FIRST (before clearing table)
-        # ID represents ranking (1-500), title is the game name, price is decimal(10,2)
-        # Skip games with "Free" prices since hidef2p=1 should prevent free games
         insert_values = []
         skipped_free = 0
         ranking = 1
-        
+
         for game in games:
             cleaned_title = _clean_title(game['title'])
             if not cleaned_title:
                 continue
-            
+
             price_str = game.get('price', 'N/A')
-            # Skip free games (shouldn't appear with hidef2p=1, but handle edge cases)
             if price_str in ["Free", "N/A", "?", ""]:
                 skipped_free += 1
                 logger.warning(f"Skipping game with invalid/free price: '{cleaned_title}' (price: '{price_str}')")
                 continue
-            
-            # Parse price from string (e.g., "$29.99" -> 29.99)
+
             price_value = _parse_price(price_str)
-            
-            # Double-check: if parsed price is 0.00, skip it (shouldn't happen with hidef2p)
             if price_value == 0.00:
                 skipped_free += 1
                 logger.warning(f"Skipping game with 0.00 price: '{cleaned_title}' (original: '{price_str}')")
                 continue
-            
+
             insert_values.append((ranking, cleaned_title, price_value))
             ranking += 1
-        
-        # Step 2: Only proceed if we have valid data to insert
+
         if not insert_values:
             logger.error("No valid games to insert, keeping existing topsellers data")
             return False
-        
-        # Step 3: Get database connection and clear table (only after validation)
-        connection = get_connection()
-        if not connection:
-            logger.error("Failed to get database connection")
-            return False
-        
-        cursor = connection.cursor()
-        
-        # Step 4: Empty the topsellers table (delete all rows)
-        cursor.execute("DELETE FROM topsellers")
-        logger.info("Cleared topsellers table")
-        
-        # Step 5: Batch insert new data
-        insert_query = "INSERT INTO topsellers (id, title, price) VALUES (%s, %s, %s)"
-        execute_many(insert_query, insert_values, connection=connection)
-        
-        connection.commit()
-        cursor.close()
-        connection.close()
-        
+
+        count = replace_topsellers(insert_values)
         if skipped_free > 0:
-            logger.warning(f"Skipped {skipped_free} games with free/invalid prices (should not occur with hidef2p=1)")
-        
-        logger.info(f"Successfully inserted {len(insert_values)} top sellers into database")
+            logger.warning(f"Skipped {skipped_free} games with free/invalid prices")
+        logger.info(f"Successfully inserted {count} top sellers into database")
         return True
-        
+
     except Exception as e:
         logger.error(f"Error saving to database: {e}")
-        if connection:
-            try:
-                connection.rollback()
-                connection.close()
-            except:
-                pass
         return False
 
 def _save_to_csv(games):
@@ -328,29 +287,13 @@ def _save_to_csv(games):
 
 def get_steam_prices():
     """
-    Read and return Steam games from database
-    
-    Returns:
-        list: List of [title, price] items (ordered by ranking)
+    Read and return Steam games from database.
+    Returns list of [title, price] items (ordered by ranking).
     """
     try:
-        connection = get_connection()
-        if not connection:
-            logger.error("Failed to get database connection")
-            return []
-        
-        cursor = connection.cursor()
-        cursor.execute("SELECT title, price FROM topsellers ORDER BY id ASC")
-        rows = cursor.fetchall()
-        cursor.close()
-        connection.close()
-        
-        # Convert to list format: [[title, price], [title, price], ...]
-        games = [[row[0], row[1]] for row in rows]
-        
+        games = get_steam_topsellers()
         logger.info(f"Loaded {len(games)} Steam games from database")
         return games
-        
     except Exception as e:
         logger.error(f"Error reading Steam data from database: {e}")
         return []
