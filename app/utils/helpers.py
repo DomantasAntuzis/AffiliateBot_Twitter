@@ -41,32 +41,25 @@ def save_json_file(filepath, data, indent=4):
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=indent, ensure_ascii=False)
 
-def _get_steam_topsellers():
-    """Load Steam top sellers from database. Returns [[title, price], ...]."""
-    try:
-        return get_steam_topsellers()
-    except Exception as e:
-        logger.error(f"Error loading Steam prices from database: {e}")
-        return []
 
-
-def _normalize_title(title):
-    """
-    Normalize title for fuzzy matching by removing punctuation and normalizing whitespace
-    """
-    # Convert to lowercase
+def normalize_title(title):
     normalized = title.lower().strip()
-    
-    # Replace common punctuation with spaces (hyphens, colons, semicolons, etc.)
     normalized = re.sub(r'[-:;–—]', ' ', normalized)
-    
-    # Remove other punctuation (keep apostrophes for names like "O'Brien")
     normalized = re.sub(r'[^\w\s\']', '', normalized)
-    
-    # Collapse multiple spaces to single space
     normalized = re.sub(r'\s+', ' ', normalized)
-    
-    # Trim
     normalized = normalized.strip()
     
     return normalized
+
+def normalize_distributor_name(program_name):
+  program_name = program_name.strip()
+  
+  # Mapping from CSV PROGRAM_NAME to database name
+  name_mapping = {
+  "GamersGate.com": "GamersGate",
+  "GOG.COM INT": "GOG",
+  "YUPLAY": "YUPLAY",  # Database has YUPLAY in all caps
+  "IndieGala": "IndieGala",
+  }
+  
+  return name_mapping.get(program_name, program_name)

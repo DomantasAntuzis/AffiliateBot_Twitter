@@ -2,23 +2,20 @@
 Twitter posting service
 Handles tweet creation and posting to Twitter
 """
+import io
 import os
 import tweepy
 import requests
-import sys
+from PIL import Image
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 from utils.logger import logger
 from database.queries.items import get_offer_id
 from database.queries.twitter_posts import insert_twitter_post
+from utils.helpers import normalize_distributor_name
 
 def post_deal_to_twitter(deal):
-  """
-  Post a deal to Twitter
-  """
   deal_title = deal["title"]
   deal_source = deal["source"]
   deal_link = deal["link"]
@@ -36,13 +33,13 @@ def post_deal_to_twitter(deal):
   logger.info(f"Posting tweet for: {deal_title} ({deal_source})")
 
   # Download and save image
-  image_path = _download_game_image(deal_image_link)
+  image_path = download_game_image(deal_image_link)
   if not image_path:
     logger.error("Failed to download game image")
     return False
 
   # Authenticate to Twitter
-  auth_result = _authenticate_twitter()
+  auth_result = authenticate_twitter()
   if not auth_result:
     logger.error("Failed to authenticate with Twitter")
     return False
@@ -57,7 +54,7 @@ def post_deal_to_twitter(deal):
     return False
 
   # Format source name
-  formatted_source = _format_source_name(deal_source)
+  formatted_source = format_source_name(deal_source)
 
   # Create tweet text
   price_str = f"${deal_sale_price:.2f}" if isinstance(deal_sale_price, (int, float)) else str(deal_sale_price)
@@ -70,7 +67,7 @@ def post_deal_to_twitter(deal):
     # Log response details
     if response:
       try:
-        normalized_distributor = _normalize_distributor_name(deal_source)
+        normalized_distributor = normalize_distributor_name(deal_source)
         offer_id = get_offer_id(
           item_title=deal_title,
           affiliate_url=deal_link,
@@ -106,26 +103,24 @@ def post_deal_to_twitter(deal):
     logger.error(f"Error type: {type(e).__name__}")
     return False
 
-def _download_game_image(image_url):
-  """
-  Download game image from URL
-
-  Args:
-    image_url: URL of the image
-
-  Returns:
-    str: Path to saved image or None if failed
-  """
+def download_game_image(image_url):
   os.makedirs(config.IMAGES_DIR, exist_ok=True)
   image_path = os.path.join(config.IMAGES_DIR, "game_image.jpg")
 
   try:
-    img_data = requests.get(image_url).content
+    resp = requests.get(image_url, timeout=15)
+    resp.raise_for_status()
+    img_data = resp.content
+    content_type = (resp.headers.get("Content-Type") or "").lower()
 
-    with open(image_path, 'wb') as handler:
-      handler.write(img_data)
+    if "image/" not in content_type:
+      logger.warning(f"URL returned non-image Content-Type: {content_type}")
 
-    logger.debug(f"Image downloaded to {image_path}")
+    img = Image.open(io.BytesIO(img_data))
+    if img.mode in ("RGBA", "P"):
+      img = img.convert("RGB")
+    img.save(image_path, "JPEG", quality=90)
+    logger.debug(f"Image converted and saved to {image_path}")
     return image_path
 
   except requests.RequestException as e:
@@ -134,11 +129,11 @@ def _download_game_image(image_url):
   except IOError as e:
     logger.error(f"Error saving image: {e}")
     return None
+  except Exception as e:
+    logger.error(f"Error processing image (may be invalid format): {e}")
+    return None
 
-def _authenticate_twitter():
-  """
-  Authenticate with Twitter API
-  """
+def authenticate_twitter():
   bearer_token = config.TWITTER_BEARER_TOKEN
   api_key = config.TWITTER_API_KEY
   api_key_secret = config.TWITTER_API_KEY_SECRET
@@ -171,43 +166,10 @@ def _authenticate_twitter():
     logger.error(f"Error authenticating with Twitter: {e}")
     return None
 
-def _format_source_name(source):
-  """
-  Format source name for tweet display
-
-  Args:
-    source: Original source name
-
-  Returns:
-    str: Formatted source name
-  """
+def format_source_name(source):
   if source == "GOG.COM INT":
     return "GOG"
   elif source == "GamersGate.com":
     return "GamersGate"
   else:
     return source
-
-def _normalize_distributor_name(program_name):
-  """
-  Normalize PROGRAM_NAME from deal source to match database distributor names
-  Same logic as affiliate_service.py
-
-  Args:
-    program_name: Original program/source name
-
-  Returns:
-    str: Normalized distributor name for database lookup
-  """
-  program_name = program_name.strip()
-
-  # Mapping from deal source to database distributor name
-  name_mapping = {
-    "GamersGate.com": "GamersGate",
-    "GOG.COM INT": "GOG",
-    "YUPLAY": "Yuplay",
-    "IndieGala": "IndieGala",
-  }
-
-  # Return mapped name if exists, otherwise return original
-  return name_mapping.get(program_name, program_name)

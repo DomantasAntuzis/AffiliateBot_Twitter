@@ -13,7 +13,6 @@ from database.queries.items import (
   search_offers as db_search_offers,
 )
 from services.image_cache_service import is_image_cached
-from utils.helpers import _normalize_title
 
 # Try to import Levenshtein for fuzzy matching, fallback to basic if not available
 try:

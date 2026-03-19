@@ -17,9 +17,8 @@ TWITTER_API_KEY_SECRET = os.getenv("TWITTER_API_KEY_SECRET")
 TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
 TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
 
-# Proxy configuration
-ROTATING_PROXY = "http://p.webshare.io:9999"
-
+# Proxy configuration - DataImpulse US residential (sticky), env override via PROXY_URL
+PROXY_URL = "http://98586cab35e3ab79e17a__cr.us:55a1ee0461f0fb58@gw.dataimpulse.com:10000"
 # Database configuration
 DB_HOST = "localhost"
 DB_USER = "root"
@@ -67,5 +66,6 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # CJ Affiliate
-CJ_DATA_DATE = "TODAY"
+# CJ_DATA_DATE = "TODAY"
+CJ_DATA_DATE = "YESTERDAY"
 

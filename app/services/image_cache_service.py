@@ -18,60 +18,15 @@ from utils.logger import logger
 IMAGES_DIR = Path(config.DATA_DIR) / "igdb_images"
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
-def get_igdb_image_url(image_id: str, size: str = '720p') -> str:
-    """
-    Get IGDB image URL for a given image ID
-    
-    Args:
-        image_id: IGDB image ID (alphanumeric string)
-        size: Image size (cover_big, screenshot_huge, 720p, screenshot_med, etc.)
-    
-    Returns:
-        str: Full URL to IGDB image
-    """
-    if not image_id:
-        return None
-    
-    # IGDB CDN URL format: https://images.igdb.com/igdb/image/upload/t_{size}/{image_id}.jpg
-    return f"https://images.igdb.com/igdb/image/upload/t_{size}/{image_id}.jpg"
-
 def get_local_image_path(image_id: str) -> Path:
-    """
-    Get local file path for cached IGDB image
-    
-    Args:
-        image_id: IGDB image ID
-    
-    Returns:
-        Path: Local file path
-    """
     return IMAGES_DIR / f"{image_id}.jpg"
 
 def is_image_cached(image_id: str) -> bool:
-    """
-    Check if image is already cached locally
-    
-    Args:
-        image_id: IGDB image ID
-    
-    Returns:
-        bool: True if image exists locally
-    """
     if not image_id:
         return False
     return get_local_image_path(image_id).exists()
 
 def download_igdb_image(image_id: str, size: str = '720p') -> Optional[Path]:
-    """
-    Download IGDB image and save locally
-    
-    Args:
-        image_id: IGDB image ID (alphanumeric string)
-        size: Image size (default: 720p for better quality without bad cropping)
-    
-    Returns:
-        Path: Local file path if successful, None otherwise
-    """
     if not image_id:
         logger.warning("No image_id provided for download")
         return None
@@ -83,7 +38,7 @@ def download_igdb_image(image_id: str, size: str = '720p') -> Optional[Path]:
         return local_path
     
     # Get IGDB image URL
-    image_url = get_igdb_image_url(image_id, size)
+    image_url = f"https://images.igdb.com/igdb/image/upload/t_{size}/{image_id}.jpg"
     
     try:
         logger.info(f"Downloading IGDB image {image_id} from {image_url}")
@@ -113,12 +68,6 @@ def download_igdb_image(image_id: str, size: str = '720p') -> Optional[Path]:
         return None
 
 def get_image_stats() -> dict:
-    """
-    Get statistics about cached images
-    
-    Returns:
-        dict: Statistics including total images, total size, etc.
-    """
     images = list(IMAGES_DIR.glob("*.jpg"))
     total_size = sum(img.stat().st_size for img in images)
     

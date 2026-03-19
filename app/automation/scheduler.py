@@ -19,6 +19,7 @@ from services.igdb_data_service import (
 from services.twitter_service import post_deal_to_twitter
 from utils.helpers import load_json_file, save_json_file
 from utils.logger import logger
+from services.steam_service import fetch_and_save_steam_topsellers
 
 
 def daily_data_collection():
@@ -38,18 +39,16 @@ def daily_data_collection():
             logger.error("Failed to fetch affiliate products")
             return
 
+        logger.info("Step 2/4: Fetching and saving top 500 Steam sellers to database...")
+        if not fetch_and_save_steam_topsellers():
+            logger.error("Failed to fetch and save Steam top sellers")
+            return
+
         logger.info("Step 3/4: Finding matching deals...")
         deals = find_matching_deals(products_list=products_list)
         if not deals:
             logger.warning("No matching deals found")
             return
-
-        # Step 4: Validate deals
-        # logger.info("Step 4/4: Validating deals...")
-        # valid_deals = validate_deals_batch(deals)
-        # if not valid_deals:
-        #     logger.warning("No valid deals after validation")
-        #     return
 
         end_time = time.time()
         elapsed_time = end_time - start_time
@@ -61,46 +60,12 @@ def daily_data_collection():
         logger.info("=" * 60)
 
         # Post first batch of tweets
-        _post_tweets_batch(deals)
+        post_tweets_batch(deals)
 
     except Exception as e:
         logger.error(f"Error in daily data collection: {e}")
 
-
-# def _shuffle_deals():
-#     """Shuffle deals within each source group for random posting"""
-#     try:
-#         # Load valid deals
-#         deals = load_json_file(config.VALID_DEALS_JSON)
-
-#         # Load posted games to filter them out
-#         posted_games_list = get_recent_posted_titles()
-
-#         # Filter out already-posted games from each group
-#         filtered_deals = []
-#         for group in deals:
-#             filtered_group = [
-#                 deal for deal in group if deal["title"] not in posted_games_list
-#             ]
-#             if filtered_group:  # Only add non-empty groups
-#                 filtered_deals.append(filtered_group)
-
-#         # Shuffle each remaining group
-#         for group in filtered_deals:
-#             random.shuffle(group)
-
-#         # Save shuffled deals (without posted games)
-#         save_json_file(config.SHUFFLED_DEALS_JSON, filtered_deals)
-
-#         logger.info(
-#             f"Deals shuffled and saved. Filtered out {len(posted_games_list)} already-posted games."
-#         )
-
-#     except Exception as e:
-#         logger.error(f"Error shuffling deals: {e}")
-
-
-def _post_tweets_batch(deals_list):
+def post_tweets_batch(deals_list):
     """Post a batch of tweets (6 tweets, 4 hours apart)"""
     logger.info("Starting tweet posting batch")
 
@@ -112,7 +77,7 @@ def _post_tweets_batch(deals_list):
             posted_games_list = get_recent_posted_titles()
 
             # Find a valid deal to post
-            deal = _select_unposted_deal(deals_list, posted_games_list)
+            deal = select_unposted_deal(deals_list, posted_games_list)
 
             if not deal:
                 logger.warning("No more deals to post")
@@ -144,17 +109,7 @@ def _post_tweets_batch(deals_list):
     logger.info(f"Tweet posting batch completed. Posted {post_count} tweets.")
 
 
-def _select_unposted_deal(deals, posted_games_list):
-    """
-    Select a random unposted deal from the deals list
-
-    Args:
-        deals: List of deal groups
-        posted_games_list: List of posted game titles
-
-    Returns:
-        dict: Selected deal or None if no deals available
-    """
+def select_unposted_deal(deals, posted_games_list):
     max_attempts = 100
     attempts = 0
 
@@ -239,30 +194,19 @@ def monthly_igdb_data_collection():
         traceback.print_exc()
 
 
-def _check_and_run_monthly_igdb():
-    """
-    Wrapper function to check if it's the first day of the month
-    and run monthly IGDB data collection if needed
-    """
+def check_and_run_monthly_igdb():
     today = datetime.datetime.now()
     if today.day == 1:
         monthly_igdb_data_collection()
 
 
 def setup_scheduler():
-    """
-    Setup and configure the scheduler
-
-    Returns:
-        None
-    """
-
     now = datetime.datetime.now() + datetime.timedelta(minutes=1)
     run_time = now.strftime("%H:%M")
 
     schedule.every().day.at(run_time).do(daily_data_collection)
 
-    schedule.every().day.at("02:00").do(_check_and_run_monthly_igdb).tag("monthly_igdb")
+    schedule.every().day.at("02:00").do(check_and_run_monthly_igdb).tag("monthly_igdb")
 
     logger.info("=" * 60)
     logger.info("Scheduler initialized!")

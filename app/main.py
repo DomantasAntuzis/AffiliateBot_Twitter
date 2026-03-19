@@ -9,8 +9,6 @@ import signal
 import time
 import uvicorn
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from utils.logger import logger
 from utils.helpers import ensure_directories
 from automation.scheduler import run_scheduler

@@ -3,7 +3,7 @@ from typing import Optional, List
 from database.db_session import get_session
 from database.models import Genre, Item, Offer, Distributor, TopSeller, ItemGenre, ItemType
 from sqlmodel import select, Session, func, or_
-from utils.helpers import _normalize_title
+from utils.helpers import normalize_title
 
 try:
 	from Levenshtein import ratio
@@ -188,7 +188,7 @@ def search_offers(
 		return []
 
 	# 1. Normalization & Pattern Prep
-	normalized_query = _normalize_title(q.strip())
+	normalized_query = normalize_title(q.strip())
 	query_words = [w for w in normalized_query.split() if len(w) >= 2]
 	if not query_words:
 		return []
@@ -223,7 +223,7 @@ def search_offers(
 		# 3. Python Stage: Levenshtein Scoring
 		scored_offers = []
 		for offer_obj, title, cover_id, dist_name in candidates:
-			norm_title = _normalize_title(title)
+			norm_title = normalize_title(title)
 				
 			# Similarity Scoring
 			lev_score = ratio(normalized_query, norm_title)
@@ -324,7 +324,7 @@ def batch_lookup_item_ids(unique_titles: set,) -> dict:
 
 	normalized_to_originals = {}
 	for t in unique_titles:
-		norm = _normalize_title(t)
+		norm = normalize_title(t)
 		if norm not in normalized_to_originals:
 			normalized_to_originals[norm] = []
 		normalized_to_originals[norm].append(t)
@@ -333,7 +333,7 @@ def batch_lookup_item_ids(unique_titles: set,) -> dict:
 		rows = session.exec(select(Item.id, Item.title)).all()
 		title_to_id = {}
 		for item_id, db_title in rows:
-			norm_db = _normalize_title(db_title)
+			norm_db = normalize_title(db_title)
 			if norm_db in normalized_to_originals:
 				for orig in normalized_to_originals[norm_db]:
 					if orig not in title_to_id:

@@ -9,9 +9,9 @@ def get_steam_topsellers():
 		topsellers = session.exec(statement).all()
 	return [[t.title, t.price] for t in topsellers]
 
-def replace_topsellers(topsellers: list[tuple[int, str, float]]) -> int:
+def insert_topsellers(topsellers: list[tuple[int, str, float]]) -> int:
 	"""
-	Replace all topsellers with new data.
+	Replace or insert all topsellers with new data.
 	topsellers: list of (id/ranking, title, price) tuples.
 	Returns number of rows inserted.
 	"""

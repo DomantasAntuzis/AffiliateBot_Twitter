@@ -4,59 +4,16 @@ Handles fetching Steam top sellers data
 """
 import requests
 from bs4 import BeautifulSoup
-import csv
-import sys
-import os
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import re
 
 import config
 from utils.logger import logger
-from database.queries.steam import replace_topsellers, get_steam_topsellers
+from database.queries.steam import insert_topsellers
 
-# def fetch_steam_topsellers():
-#     """
-#     Fetch Steam top sellers and save to database and CSV
-    
-#     Returns:
-#         bool: True if successful, False otherwise
-#     """
-#     logger.info("Starting Steam top sellers fetch")
-    
-#     topsellers = _fetch_top500_topsellers(
-#         cc=config.STEAM_REGION,
-#         lang=config.STEAM_LANGUAGE
-#     )
-    
-#     if not topsellers:
-#         logger.error("Failed to fetch Steam top sellers")
-#         return False
-    
-#     # Save to database (primary storage)
-#     db_success = _save_to_database(topsellers)
-    
-#     # Save to CSV (backup)
-#     csv_success = _save_to_csv(topsellers)
-    
-#     if db_success:
-#         logger.info(f"Successfully fetched and saved {len(topsellers)} Steam top sellers to database")
-    
-#     return db_success
-
-def _fetch_batch(start, count=100, cc="US", lang="en"):
-    """
-    Fetch a batch of games from Steam starting at 'start' position
-    
-    Args:
-        start: Starting position
-        count: Number of games to fetch (default: 100)
-        cc: Country code (default: US)
-        lang: Language (default: en)
-    
-    Returns:
-        list: List of game dictionaries
-    """
+def fetch_batch(start, count=100, cc="US", lang="en"):
+    proxy_url = config.PROXY_URL
+    session = requests.Session()
+    session.proxies = {"http": proxy_url, "https": proxy_url}
     url = "https://store.steampowered.com/search/"
     params = {
         "filter": "globaltopsellers",
@@ -79,7 +36,7 @@ def _fetch_batch(start, count=100, cc="US", lang="en"):
     }
     
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=20)
+        r = session.get(url, params=params, headers=headers, timeout=20)
         r.raise_for_status()
         data = r.json()
         
@@ -115,17 +72,7 @@ def _fetch_batch(start, count=100, cc="US", lang="en"):
         logger.error(f"Error fetching Steam batch: {e}")
         return []
 
-def _fetch_top500_topsellers(cc="US", lang="en"):
-    """
-    Fetch exactly 500 top sellers from Steam using multiple API calls
-    
-    Args:
-        cc: Country code (default: US)
-        lang: Language (default: en)
-    
-    Returns:
-        list: List of game dictionaries
-    """
+def fetch_top500_topsellers(cc="US", lang="en"):
     all_results = []
     
     # Steam API limits to 100 results per request, so we need 5 requests for 500 items
@@ -134,7 +81,7 @@ def _fetch_top500_topsellers(cc="US", lang="en"):
         logger.info(f"Fetching batch {i+1}/5 (items {start_pos+1}-{start_pos+100})...")
         
         try:
-            batch = _fetch_batch(start_pos, 100, cc, lang)
+            batch = fetch_batch(start_pos, 100, cc, lang)
             all_results.extend(batch)
             
             if len(batch) < 100:
@@ -148,16 +95,7 @@ def _fetch_top500_topsellers(cc="US", lang="en"):
     logger.info(f"Total fetched: {len(all_results)} games")
     return all_results
 
-def _parse_price(price_str):
-    """
-    Parse price string to decimal value
-    
-    Args:
-        price_str: Price string (e.g., "$29.99", "Free", "N/A", "29.99")
-    
-    Returns:
-        float: Parsed price value, or 0.00 if price is Free/N/A/invalid
-    """
+def parse_price(price_str):
     if not price_str or price_str in ["Free", "N/A", "?", ""]:
         return 0.00
     
@@ -166,7 +104,6 @@ def _parse_price(price_str):
         cleaned = str(price_str).replace("$", "").replace("€", "").replace("£", "").replace(",", "").strip()
         
         # Try to extract numeric value (handle cases like "$29.99" or "29.99")
-        import re
         match = re.search(r'(\d+\.?\d*)', cleaned)
         if match:
             return float(match.group(1))
@@ -175,17 +112,7 @@ def _parse_price(price_str):
     except Exception:
         return 0.00
 
-def _clean_title(title):
-    """
-    Remove emojis and special characters that might cause encoding issues, and truncate if too long
-    
-    Args:
-        title: Game title string
-    
-    Returns:
-        str: Cleaned title
-    """
-    import re
+def clean_title(title):
     
     # Remove emojis (4-byte UTF-8 characters)
     emoji_pattern = re.compile(
@@ -212,19 +139,16 @@ def _clean_title(title):
         cleaned = cleaned[:255]
     
     return cleaned
-    
-def _save_to_database(games):
-    """
-    Save games to topsellers database table.
-    Validates data first, then replaces table contents with new data (ranking as id).
-    """
+
+
+def save_to_database(games):
     try:
         insert_values = []
         skipped_free = 0
         ranking = 1
 
         for game in games:
-            cleaned_title = _clean_title(game['title'])
+            cleaned_title = clean_title(game['title'])
             if not cleaned_title:
                 continue
 
@@ -234,7 +158,7 @@ def _save_to_database(games):
                 logger.warning(f"Skipping game with invalid/free price: '{cleaned_title}' (price: '{price_str}')")
                 continue
 
-            price_value = _parse_price(price_str)
+            price_value = parse_price(price_str)
             if price_value == 0.00:
                 skipped_free += 1
                 logger.warning(f"Skipping game with 0.00 price: '{cleaned_title}' (original: '{price_str}')")
@@ -247,7 +171,7 @@ def _save_to_database(games):
             logger.error("No valid games to insert, keeping existing topsellers data")
             return False
 
-        count = replace_topsellers(insert_values)
+        count = insert_topsellers(insert_values)
         if skipped_free > 0:
             logger.warning(f"Skipped {skipped_free} games with free/invalid prices")
         logger.info(f"Successfully inserted {count} top sellers into database")
@@ -257,44 +181,16 @@ def _save_to_database(games):
         logger.error(f"Error saving to database: {e}")
         return False
 
-def _save_to_csv(games):
-    """
-    Save games to CSV file (backup storage)
-    
-    Args:
-        games: List of game dictionaries
-    
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        # Ensure CSV directory exists
-        os.makedirs(config.CSV_DIR, exist_ok=True)
-        
-        with open(config.STEAMDB_CSV, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["name", "price"])
-            
-            for game in games:
-                writer.writerow([game["title"], game["price"]])
-        
-        logger.info(f"Results saved to {config.STEAMDB_CSV}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error saving to CSV: {e}")
+
+def fetch_and_save_steam_topsellers(cc=None, lang=None):
+    cc = cc or config.STEAM_REGION
+    lang = lang or config.STEAM_LANGUAGE
+    logger.info("Starting Steam top sellers fetch and save")
+    games = fetch_top500_topsellers(cc=cc, lang=lang)
+    if not games:
+        logger.error("Failed to fetch Steam top sellers")
         return False
-
-def get_steam_prices():
-    """
-    Read and return Steam games from database.
-    Returns list of [title, price] items (ordered by ranking).
-    """
-    try:
-        games = get_steam_topsellers()
-        logger.info(f"Loaded {len(games)} Steam games from database")
-        return games
-    except Exception as e:
-        logger.error(f"Error reading Steam data from database: {e}")
-        return []
-
+    success = save_to_database(games)
+    if success:
+        logger.info("Steam top sellers fetch and save completed successfully")
+    return success

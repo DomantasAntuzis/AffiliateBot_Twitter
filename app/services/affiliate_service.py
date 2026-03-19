@@ -7,25 +7,23 @@ import os
 import zipfile
 import csv
 import time
-import re
 from datetime import datetime, timedelta
-import sys
-from selenium import webdriver
+from seleniumwire import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from webdriver_manager.chrome import ChromeDriverManager
+import html
 import config
+
 from database.queries.items import (
   batch_insert_offers,
   batch_lookup_item_ids,
   batch_lookup_distributor_ids,
 )
-from utils.helpers import _normalize_title
+from utils.helpers import normalize_title, normalize_distributor_name
 from utils.logger import logger
 
 
@@ -34,17 +32,12 @@ from utils.logger import logger
 # ============================================================================
 
 def fetch_all_affiliate_products():
-  """
-  Fetch all affiliate products, insert to DB. Returns (success, products_list).
-  Use products_list for both DB (done here) and deals matching (pass to find_matching_deals).
-  Also writes to PRODUCTS_CSV for backup / get_affiliate_products_from_csv.
-  """
-  products = get_affiliate_products_list()
-  _cleanup_temp_files()
+  products = build_items_info_csv()
+  cleanup_temp_files()
   if products is None:
     return (False, [])
   if products:
-    _insert_offers_to_database(products)
+    insert_offers_to_database(products)
   with open(config.PRODUCTS_CSV, "w", newline='', encoding="utf-8") as f:
     writer = csv.DictWriter(f, fieldnames=FIELDS, quoting=csv.QUOTE_MINIMAL)
     writer.writeheader()
@@ -52,14 +45,8 @@ def fetch_all_affiliate_products():
   return (True, products)
 
 def get_affiliate_products_from_csv():
-  """
-  Read and return affiliate products from CSV
-  
-  Returns:
-  list: List of product dictionaries
-  """
-  products = []
-  
+
+  products = []  
   try:
     with open(config.PRODUCTS_CSV, 'r', encoding='utf-8') as f:
       reader = csv.DictReader(f)
@@ -73,19 +60,7 @@ def get_affiliate_products_from_csv():
     logger.error(f"Error reading products CSV: {e}")
     return []
 
-def _fetch_gamersgate_page(session, page=1, platform="pc", timestamp=None):
-  """
-  Fetch a single page of GamersGate offers from their API using session
-  
-  Args:
-  session: requests.Session object (maintains same proxy IP)
-  page: Page number (default: 1)
-  platform: Platform filter (default: "pc")
-  timestamp: Session timestamp for consistency
-  
-  Returns:
-  dict: JSON response data or None on failure
-  """
+def fetch_gamersgate_page(session, page=1, platform="pc", timestamp=None):
   if timestamp is None:
     timestamp = int(time.time() * 1000)
   
@@ -115,17 +90,7 @@ def _fetch_gamersgate_page(session, page=1, platform="pc", timestamp=None):
     logger.warning(f"Error fetching GamersGate page {page}: {str(e)[:100]}")
     return None
 
-def _parse_gamersgate_item(item):
-  """
-  Parse a GamersGate catalog item and extract relevant fields
-  
-  Args:
-  item: Raw item dictionary from API
-  
-  Returns:
-  dict: Parsed item with name, discount, prices, availability
-  """
-  import html
+def parse_gamersgate_item(item):
   
   # Clean prices (remove HTML entities and currency symbols)
   baseprice = item.get("baseprice", "")
@@ -146,33 +111,12 @@ def _parse_gamersgate_item(item):
   return parsed
 
 def insert_gamersgate_offers():
-  """
-  Fetch GamersGate offers from API, match with affiliate products, and insert into database.
-  Uses requests.Session() to maintain consistent proxy IP across all requests.
-  Only inserts offers for games that exist in affiliate products CSV.
-  
-  Returns:
-  bool: True if successful, False otherwise
-  """
   try:
     logger.info("Fetching GamersGate offers from API...")
-    proxies = {}
-    if hasattr(config, 'ROTATING_PROXY') and config.ROTATING_PROXY:
-      proxy_url = str(config.ROTATING_PROXY).split(',')[0].split(';')[0].strip()
-      proxies = {'http': proxy_url, 'https': proxy_url}
-      logger.info("Using proxy for GamersGate API")
+    proxy_url = config.PROXY_URL
     session = requests.Session()
-    if proxies:
-      session.proxies.update(proxies)
-    if proxies:
-      try:
-        logger.info("Verifying proxy IP...")
-        ip_check = session.get("https://api.ipify.org?format=json", timeout=10)
-        actual_ip = ip_check.json().get('ip', 'Unknown')
-        logger.info(f"GamersGate requests using proxy IP: {actual_ip}")
-      except Exception as e:
-        logger.warning(f"Could not verify proxy IP: {e}")
-  
+    session.proxies = {"http": proxy_url, "https": proxy_url}
+
     all_gamersgate_offers = []
     platform = "pc"
     page = 1
@@ -182,7 +126,7 @@ def insert_gamersgate_offers():
     max_consecutive_failures = 3
 
     while True:
-      data = _fetch_gamersgate_page(session=session, page=page, platform=platform, timestamp=session_timestamp)
+      data = fetch_gamersgate_page(session=session, page=page, platform=platform, timestamp=session_timestamp)
       if not data:
         consecutive_failures += 1
         if consecutive_failures >= max_consecutive_failures:
@@ -194,7 +138,7 @@ def insert_gamersgate_offers():
       catalog = data.get("catalog", [])
       if not catalog:
         break
-      parsed_items = [_parse_gamersgate_item(i) for i in catalog]
+      parsed_items = [parse_gamersgate_item(i) for i in catalog]
       current_names = [item.get("name") for item in parsed_items]
       if previous_page_names is not None:
         current_sample = current_names[:5] if len(current_names) >= 5 else current_names
@@ -219,8 +163,8 @@ def insert_gamersgate_offers():
     for product in affiliate_products:
       title = product.get("TITLE", "").strip()
       program_name = product.get("PROGRAM_NAME", "").strip()
-      if title and program_name == "GamersGate.com" and _normalize_title(title) not in affiliate_map:
-        affiliate_map[_normalize_title(title)] = product
+      if title and program_name == "GamersGate.com" and normalize_title(title) not in affiliate_map:
+        affiliate_map[normalize_title(title)] = product
 
     logger.info(f"Found {len(affiliate_map)} GamersGate affiliate products in CSV")
   
@@ -229,7 +173,7 @@ def insert_gamersgate_offers():
       gg_title = gg_offer.get("name", "").strip()
       if not gg_title or not gg_offer.get("is_available") or not gg_offer.get("raw_price", "").strip():
         continue
-      affiliate_product = affiliate_map.get(_normalize_title(gg_title))
+      affiliate_product = affiliate_map.get(normalize_title(gg_title))
       if not affiliate_product:
         continue
       sale_price = gg_offer.get("raw_price", "").strip()
@@ -257,7 +201,7 @@ def insert_gamersgate_offers():
       logger.warning("No matched GamersGate offers to insert")
       return True
     try:
-      _insert_offers_to_database(matched_offers)
+      insert_offers_to_database(matched_offers)
       logger.info("Successfully processed GamersGate offers")
       return True
     except Exception as e:
@@ -272,13 +216,7 @@ def insert_gamersgate_offers():
 # CJ AFFILIATE FUNCTIONS
 # ============================================================================
 
-def _fetch_cj_data_files():
-  """
-  Fetch CJ Affiliate products ZIP, extract, and return list of CSV files
-  
-  Returns:
-  list: List of extracted CSV/TXT file paths, or None if failed
-  """
+def fetch_cj_data_files():
   # CJ HTTP credentials
   url_base = "https://datatransfer.cj.com"
   username = config.CJ_HTTP_USERNAME
@@ -308,7 +246,7 @@ def _fetch_cj_data_files():
     out_file = os.path.join(config.TEMP_DIR, os.path.basename(file_path))
     with open(out_file, "wb") as f:
       f.write(response.content)
-    data_files = _extract_zip_file(out_file)
+    data_files = extract_zip_file(out_file)
     if not data_files:
       return None
     logger.info(f"CJ Affiliate: Fetched {len(data_files)} data files")
@@ -317,16 +255,7 @@ def _fetch_cj_data_files():
     logger.error(f"Error fetching CJ products: {e}")
     return None
 
-def _extract_zip_file(zip_path):
-  """
-  Extract ZIP file and return list of CSV/TXT files
-  
-  Args:
-  zip_path: Path to ZIP file
-  
-  Returns:
-  list: List of extracted CSV/TXT file paths
-  """
+def extract_zip_file(zip_path):
   try:
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
       zip_ref.extractall(config.TEMP_DIR)
@@ -350,14 +279,7 @@ def _extract_zip_file(zip_path):
 # INDIEGALA SCRAPING FUNCTIONS
 # ============================================================================
 
-def _fetch_indiegala_data():
-  """
-  Scrape IndieGala products and return list of products
-  Deduplicates products by title to prevent duplicates
-  
-  Returns:
-  list: List of product dictionaries, or None if failed
-  """
+def fetch_indiegala_data():
   url = "https://www.indiegala.com/store/games/on-sale"
   
   chrome_options = Options()
@@ -375,15 +297,23 @@ def _fetch_indiegala_data():
   }
   
   chrome_options.add_experimental_option('prefs', prefs)
-  chrome_options.add_argument("--headless")
+  chrome_options.add_argument("--headless=new")
   chrome_options.add_argument("--disable-gpu")
   chrome_options.add_argument("--window-size=1920,1080")
   chrome_options.add_argument("--no-sandbox")
   chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-  # chrome_options.page_load_strategy = 'eager'  # Wait for DOM only
-  chrome_options.add_argument(f"--proxy-server={config.ROTATING_PROXY}")
-  
-  driver = webdriver.Chrome(options=chrome_options)
+
+  proxy_url = config.PROXY_URL
+  if proxy_url:
+    sw_options = {
+      "proxy": {"http": proxy_url, "https": proxy_url, "no_proxy": "localhost,127.0.0.1"},
+      "verify_ssl": False,
+    }
+    driver = webdriver.Chrome(
+      service=Service(ChromeDriverManager().install()),
+      seleniumwire_options=sw_options,
+      options=chrome_options,
+    )
   
   # Set timeouts for faster page loads
   driver.set_page_load_timeout(20)  # Max 20 seconds per page
@@ -485,20 +415,11 @@ def _fetch_indiegala_data():
 FIELDS = ["PROGRAM_NAME", "ID", "TITLE", "LINK", "IMAGE_LINK", "AVAILABILITY", "PRICE", "SALE_PRICE", "DISCOUNT"]
 
 
-def get_affiliate_products_list():
-  """
-  Fetch and combine all affiliate products (CJ + IndieGala + GamersGate).
-  Returns list of dicts with PRICE, SALE_PRICE, DISCOUNT. Same list for DB insert and deals matching.
-  Returns None on fetch failure, [] on empty.
-  """
-  cj_data_files = _fetch_cj_data_files()
+def build_items_info_csv():
+  cj_data_files = fetch_cj_data_files()
   if cj_data_files is None:
     logger.error("Failed to fetch CJ products")
     return None
-
-  indiegala_products = _fetch_indiegala_data()
-  if indiegala_products is None:
-    indiegala_products = []
 
   cj_rows = []
   for data_file in cj_data_files:
@@ -515,20 +436,25 @@ def get_affiliate_products_list():
 
   cj_non_gg = [r for r in cj_rows if r.get("PROGRAM_NAME", "").strip() != "GamersGate.com"]
   cj_gg = [r for r in cj_rows if r.get("PROGRAM_NAME", "").strip() == "GamersGate.com"]
+  logger.info(f"Step 1: CJ base loaded ({len(cj_non_gg)} non-GG, {len(cj_gg)} GG)")
+
+  indiegala_products = fetch_indiegala_data()
+  if indiegala_products is None:
+    indiegala_products = []
+  indiegala_rows = []
+  for p in indiegala_products:
+    indiegala_rows.append({f: str(p.get(f, "")).replace("\n", " ").replace("\r", " ").replace("\t", " ").strip() for f in FIELDS})
+  logger.info(f"Step 2: IndieGala ADDED ({len(indiegala_rows)} rows)")
 
   affiliate_map = {}
   for p in cj_gg:
     t = p.get("TITLE", "").strip()
-    if t and _normalize_title(t) not in affiliate_map:
-      affiliate_map[_normalize_title(t)] = p
-
-  matched_gg = _fetch_and_match_gamersgate_offers(affiliate_map)
-  scraped_titles = {_normalize_title(m["TITLE"]) for m in matched_gg}
-  cj_gg_keep = [r for r in cj_gg if _normalize_title(r.get("TITLE", "")) not in scraped_titles]
-
-  indiegala_rows = []
-  for p in indiegala_products:
-    indiegala_rows.append({f: str(p.get(f, "")).replace("\n", " ").replace("\r", " ").replace("\t", " ").strip() for f in FIELDS})
+    if t and normalize_title(t) not in affiliate_map:
+      affiliate_map[normalize_title(t)] = p
+  matched_gg = fetch_and_match_gamersgate_offers(affiliate_map)
+  scraped_titles = {normalize_title(m["TITLE"]) for m in matched_gg}
+  cj_gg_keep = [r for r in cj_gg if normalize_title(r.get("TITLE", "")) not in scraped_titles]
+  logger.info(f"Step 3: GamersGate REPLACED (matched {len(matched_gg)}, kept {len(cj_gg_keep)} fallback)")
 
   raw = cj_non_gg + indiegala_rows + cj_gg_keep + matched_gg
   products = []
@@ -539,27 +465,25 @@ def get_affiliate_products_list():
     if not price or not sale:
       continue
     if not discount or discount == "0":
-      discount = str(_calculate_discount(price, sale))
+      discount = str(calculate_discount(price, sale))
       r["DISCOUNT"] = discount
     if discount:
       products.append(r)
-  filtered = len(raw) - len(products)
-  if filtered > 0:
-    logger.info(f"Filtered {filtered} offers missing price/salePrice or uncalculable discount")
-  logger.info(f"Product list: {len(products)} (CJ non-GG: {len(cj_non_gg)}, IndieGala: {len(indiegala_rows)}, CJ GG: {len(cj_gg_keep)}, GamersGate scraped: {len(matched_gg)})")
+  logger.info(f"Step 4: Discounts calculated/applied where missing, {len(products)} rows ready")
+
+  os.makedirs(config.CSV_DIR, exist_ok=True)
+  with open(config.PRODUCTS_CSV, "w", newline='', encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=FIELDS, quoting=csv.QUOTE_MINIMAL)
+    writer.writeheader()
+    writer.writerows(products)
+  logger.info(f"Step 5: Wrote {config.PRODUCTS_CSV} with {len(products)} rows")
   return products
 
-
-def _fetch_and_match_gamersgate_offers(affiliate_map):
-  """Fetch GamersGate API, match with affiliate_map. Returns list of offer dicts."""
+def fetch_and_match_gamersgate_offers(affiliate_map):
   try:
-    proxies = {}
-    if hasattr(config, 'ROTATING_PROXY') and config.ROTATING_PROXY:
-      proxy_url = str(config.ROTATING_PROXY).split(',')[0].split(';')[0].strip()
-      proxies = {'http': proxy_url, 'https': proxy_url}
+    proxy_url = config.PROXY_URL
     session = requests.Session()
-    if proxies:
-      session.proxies.update(proxies)
+    session.proxies = {"http": proxy_url, "https": proxy_url}
 
     all_gg = []
     page = 1
@@ -567,7 +491,7 @@ def _fetch_and_match_gamersgate_offers(affiliate_map):
     ts = int(time.time() * 1000)
     fails = 0
     while True:
-      data = _fetch_gamersgate_page(session=session, page=page, platform="pc", timestamp=ts)
+      data = fetch_gamersgate_page(session=session, page=page, platform="pc", timestamp=ts)
       if not data:
         fails += 1
         if fails >= 3:
@@ -578,7 +502,7 @@ def _fetch_and_match_gamersgate_offers(affiliate_map):
       cat = data.get("catalog", [])
       if not cat:
         break
-      parsed = [_parse_gamersgate_item(i) for i in cat]
+      parsed = [parse_gamersgate_item(i) for i in cat]
       names = [x.get("name") for x in parsed]
       if prev_names:
         s1 = names[:5] if len(names) >= 5 else names
@@ -597,7 +521,7 @@ def _fetch_and_match_gamersgate_offers(affiliate_map):
       title = gg.get("name", "").strip()
       if not title or not gg.get("is_available") or not gg.get("raw_price", "").strip():
         continue
-      aff = affiliate_map.get(_normalize_title(title))
+      aff = affiliate_map.get(normalize_title(title))
       if not aff:
         continue
       sp = gg.get("raw_price", "").strip()
@@ -631,64 +555,7 @@ def _fetch_and_match_gamersgate_offers(affiliate_map):
 # CSV PROCESSING & DATABASE INSERTION FUNCTIONS
 # ============================================================================
 
-def _process_csv_files(cj_data_files, indiegala_products=None):
-  """
-  Process CSV files and IndieGala products, combine into single organized CSV
-  Also inserts affiliate product data into database
-  """
-  fields = ["PROGRAM_NAME", "ID", "TITLE", "LINK", "IMAGE_LINK", "AVAILABILITY", "PRICE", "SALE_PRICE", "DISCOUNT"]
-  
-  if indiegala_products is None:
-    indiegala_products = []
-  
-  try:
-    all_rows_data = []
-
-    with open(config.PRODUCTS_CSV, "w", newline='', encoding="utf-8") as outfile:
-      writer = csv.DictWriter(outfile, fieldnames=fields, quoting=csv.QUOTE_MINIMAL)
-      writer.writeheader()
-      
-      total_rows = 0
-      
-      for data_file in cj_data_files:
-        try:
-          with open(data_file, newline='', encoding="utf-8") as infile:
-            reader = csv.DictReader(infile)
-            for row in reader:
-              out_row = {field: str(row.get(field, "")).replace("\n", " ").replace("\r", " ").replace("\t", " ").strip() for field in fields}
-              if not out_row.get("DISCOUNT"):
-                out_row["DISCOUNT"] = ""
-              writer.writerow(out_row)
-              total_rows += 1
-              all_rows_data.append(out_row)
-        except Exception as e:
-          logger.error(f"Error processing {data_file}: {e}")
-      
-      if indiegala_products:
-        for product in indiegala_products:
-          out_row = {field: str(product.get(field, "")).replace("\n", " ").replace("\r", " ").replace("\t", " ").strip() for field in fields}
-          writer.writerow(out_row)
-          total_rows += 1
-          all_rows_data.append(out_row)
-
-    logger.info(f"Processed {total_rows} products ({total_rows - len(indiegala_products)} CJ, {len(indiegala_products)} IndieGala)")
-
-    # Now process database inserts
-    if not all_rows_data:
-      logger.warning("No row data collected - skipping database inserts")
-    else:
-      _insert_offers_to_database(all_rows_data)
-
-    return True
-
-  except Exception as e:
-    logger.error(f"Error creating combined CSV: {e}")
-    return False
-
-def _insert_offers_to_database(all_rows_data):
-  """
-  Insert affiliate offers into database using batch processing.
-  """
+def insert_offers_to_database(all_rows_data):
   unique_titles = set()
   unique_program_names = set()
   for row_data in all_rows_data:
@@ -703,13 +570,13 @@ def _insert_offers_to_database(all_rows_data):
   item_id_map = batch_lookup_item_ids(unique_titles)
   normalized_to_originals = {}
   for prog_name in unique_program_names:
-    norm = _normalize_distributor_name(prog_name)
+    norm = normalize_distributor_name(prog_name)
     if norm not in normalized_to_originals:
       normalized_to_originals[norm] = []
     normalized_to_originals[norm].append(prog_name)
   distributor_id_map = batch_lookup_distributor_ids(normalized_to_originals)
 
-  query_values, stats = _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map)
+  query_values, stats = prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map)
 
   if query_values:
     count = batch_insert_offers(query_values)
@@ -717,10 +584,7 @@ def _insert_offers_to_database(all_rows_data):
   else:
     logger.warning("No valid products to insert into database")
 
-def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
-  """
-  Prepare offer insert values from row data
-  """
+def prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
   query_values = []
   skipped_count = 0
   missing_item_count = 0
@@ -804,9 +668,9 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
       try:
         discount = int(float(row_discount))
       except (ValueError, TypeError):
-        discount = _calculate_discount(list_price_clean, sale_price_clean)
+        discount = calculate_discount(list_price_clean, sale_price_clean)
     else:
-      discount = _calculate_discount(list_price_clean, sale_price_clean)
+      discount = calculate_discount(list_price_clean, sale_price_clean)
 
     if discount < 20:
       skipped_count += 1
@@ -859,44 +723,18 @@ def _prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
         if not item_id:
           missing_items.append({'title': title, 'program': program_name})
     if missing_items:
-      _write_missing_titles_to_file(missing_items)
+      write_missing_titles_to_file(missing_items)
   
   return query_values, stats
 
 # ============================================================================
 # HELPER/UTILITY FUNCTIONS
-# ============================================================================
+# ============================================================
 
-def _normalize_distributor_name(program_name):
-  """
-  Normalize PROGRAM_NAME from CSV to match database distributor names
-  Examples:
-  - "GamersGate.com" → "GamersGate"
-  - "YUPLAY" → "Yuplay" (or "YUPLAY" depending on DB)
-  - "GOG.COM" → "GOG"
-  - "IndieGala" → "IndieGala" (same)
-  """
-  program_name = program_name.strip()
-  
-  # Mapping from CSV PROGRAM_NAME to database name
-  name_mapping = {
-  "GamersGate.com": "GamersGate",
-  "GOG.COM INT": "GOG",
-  "YUPLAY": "YUPLAY",  # Database has YUPLAY in all caps
-  "IndieGala": "IndieGala",
-  }
-  
-  # Return mapped name if exists, otherwise return original
-  return name_mapping.get(program_name, program_name)
-
-def _calculate_discount(list_price_str, sale_price_str):
-  """
-  Calculate discount percentage from list_price and sale_price
-  Returns rounded whole number percentage, or 0 if calculation fails
-  """
+def calculate_discount(list_price_str, sale_price_str):
   try:
-    list_price_str = str(list_price_str).replace("$", "").replace(",", "").replace(" ", "").strip()
-    sale_price_str = str(sale_price_str).replace("$", "").replace(",", "").replace(" ", "").strip()
+    list_price_str = str(list_price_str).replace("$", "").replace(",", "").replace(" ", "").replace("USD", "").strip()
+    sale_price_str = str(sale_price_str).replace("$", "").replace(",", "").replace(" ", "").replace("USD", "").strip()
     if not list_price_str or not sale_price_str:
       return 0
     list_price = float(list_price_str)
@@ -909,10 +747,7 @@ def _calculate_discount(list_price_str, sale_price_str):
     logger.debug(f"Error calculating discount: {e}")
     return 0
 
-def _write_missing_titles_to_file(missing_items):
-  """
-  Write missing game titles to CSV file for easy import
-  """
+def write_missing_titles_to_file(missing_items):
   try:
     title_info = {}
     for item in missing_items:
@@ -934,8 +769,7 @@ def _write_missing_titles_to_file(missing_items):
   except Exception as e:
     logger.error(f"Error writing missing titles to file: {e}")
 
-def _cleanup_temp_files():
-  """Clean up temporary files in product_files directory"""
+def cleanup_temp_files():
   for fname in os.listdir(config.TEMP_DIR):
     fpath = os.path.join(config.TEMP_DIR, fname)
     if os.path.isfile(fpath) and not fname.startswith("."):

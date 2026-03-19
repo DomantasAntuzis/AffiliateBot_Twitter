@@ -9,21 +9,13 @@ import re
 import random
 import json
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import config as config
+import config
 from utils.logger import logger
-from utils.helpers import _normalize_title
+from utils.helpers import normalize_title
 from database.queries.steam import get_steam_topsellers
 
 
 def find_matching_deals(products_list=None):
-    """
-    Match affiliate products with Steam top sellers.
-    products_list: list of dicts (PROGRAM_NAME, TITLE, LINK, etc.) - preferred, from get_affiliate_products_list.
-    If None, falls back to reading config.PRODUCTS_CSV.
-    """
     logger.info("Finding deals by matching affiliate products with Steam top sellers")
 
     steam_games = get_steam_topsellers()
@@ -44,7 +36,7 @@ def find_matching_deals(products_list=None):
         for s_row in steam_games:
             steam_title = s_row[0]
             steam_price = float(s_row[1])
-            norm_steam = _normalize_title(steam_title)
+            norm_steam = normalize_title(steam_title)
 
             for p in product_list:
                 distributor = p.get("PROGRAM_NAME", "").strip()
@@ -58,7 +50,7 @@ def find_matching_deals(products_list=None):
 
                 if not price or not sale_price:
                     continue
-                if _normalize_title(title) != norm_steam:
+                if normalize_title(title) != norm_steam:
                     continue
                 if availability not in ("in stock", "in_stock"):
                     continue

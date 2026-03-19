@@ -3,8 +3,8 @@ import os
 import time
 import sys
 
-# Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 from database.db_session import get_session
 from database.queries.items import (
@@ -18,8 +18,6 @@ from database.queries.items import (
 )
 from utils.logger import logger
 from services.image_cache_service import download_igdb_image, is_image_cached
-from utils.helpers import _normalize_title
-
 
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
@@ -144,7 +142,6 @@ def fetch_all_igdb_games():
                             cover_image_id = game['cover']['image_id']
                         elif isinstance(game['cover'], str):
                             cover_image_id = game['cover']
-                    # normalized_title = _normalize_title(game['name'])
                     items_to_insert.append((game['name'], "base game", game["id"], cover_image_id))
                     igdb_ids_to_query.append(game["id"])
 
@@ -298,7 +295,6 @@ def fetch_games_and_download_images():
 
 if __name__ == "__main__":
     # Allow manual execution for testing
-    import sys
     if len(sys.argv) > 1 and sys.argv[1] == "download-images":
         download_igdb_images_for_items()
     elif len(sys.argv) > 1 and sys.argv[1] == "complete":
