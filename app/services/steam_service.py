@@ -5,15 +5,17 @@ Handles fetching Steam top sellers data
 import requests
 from bs4 import BeautifulSoup
 import re
+from sqlmodel import select
 
 import config
 from utils.logger import logger
+from utils.helpers import normalize_match_title
 from database.queries.steam import insert_topsellers
+from database.db_session import get_session
+from database.models import Item, TopSeller
 
 def fetch_batch(start, count=100, cc="US", lang="en"):
-    proxy_url = config.PROXY_URL
     session = requests.Session()
-    session.proxies = {"http": proxy_url, "https": proxy_url}
     url = "https://store.steampowered.com/search/"
     params = {
         "filter": "globaltopsellers",
@@ -141,11 +143,122 @@ def clean_title(title):
     return cleaned
 
 
+def normalize_steam_title(title: str) -> str:
+    """Normalize titles for cross-source matching (Steam vs IGDB/affiliate)."""
+    return normalize_match_title(title)
+
+
+def _extract_numbers(text: str) -> set[str]:
+    return set(re.findall(r"\d+", text or ""))
+
+
+def _best_fallback_item_id(normalized_title: str, token_index: dict[str, list[tuple[int, str]]]) -> int | None:
+    """Pick best candidate for a title that does not have exact normalized match."""
+    if not normalized_title:
+        return None
+
+    tokens = [t for t in normalized_title.split() if len(t) > 1]
+    if not tokens:
+        return None
+
+    # Search only candidates sharing the first meaningful token.
+    candidates = token_index.get(tokens[0], [])
+    if not candidates:
+        return None
+
+    title_numbers = _extract_numbers(normalized_title)
+    best_score = -1.0
+    best_item_id = None
+
+    token_set = set(tokens)
+    for item_id, item_norm in candidates:
+        item_numbers = _extract_numbers(item_norm)
+        if title_numbers and title_numbers != item_numbers:
+            continue
+
+        item_tokens = set(item_norm.split())
+        if not item_tokens:
+            continue
+
+        overlap = len(token_set & item_tokens)
+        union = len(token_set | item_tokens)
+        jaccard = (overlap / union) if union else 0.0
+
+        score = jaccard
+        if item_norm.startswith(normalized_title) or normalized_title.startswith(item_norm):
+            score += 0.15
+        elif normalized_title in item_norm or item_norm in normalized_title:
+            score += 0.1
+
+        if score > best_score:
+            best_score = score
+            best_item_id = item_id
+
+    # Keep fallback conservative to avoid incorrect matches.
+    return best_item_id if best_score >= 0.7 else None
+
+
+def build_item_title_lookup() -> tuple[dict[str, int], dict[str, list[tuple[int, str]]]]:
+    """Build exact and token-based lookup for item title matching."""
+    exact_lookup: dict[str, int] = {}
+    token_index: dict[str, list[tuple[int, str]]] = {}
+
+    with get_session() as session:
+        rows = session.exec(select(Item.id, Item.norm_title, Item.title)).all()
+
+    for item_id, item_norm_title, item_title in rows:
+        if not item_id or not item_title:
+            continue
+        normalized = item_norm_title or normalize_steam_title(item_title)
+        if not normalized:
+            continue
+
+        # Keep first seen item for deterministic mapping.
+        exact_lookup.setdefault(normalized, item_id)
+
+        first_token = normalized.split()[0] if normalized.split() else ""
+        if first_token:
+            token_index.setdefault(first_token, []).append((item_id, normalized))
+
+    return exact_lookup, token_index
+
+
+def reconcile_topsellers_item_ids(only_null: bool = True) -> int:
+    """Backfill topsellers.item_id using the latest items table and title matching."""
+    exact_lookup, token_index = build_item_title_lookup()
+    updated = 0
+
+    with get_session() as session:
+        statement = select(TopSeller)
+        if only_null:
+            statement = statement.where(TopSeller.item_id.is_(None))
+
+        rows = session.exec(statement).all()
+        for row in rows:
+            normalized_title = normalize_steam_title(row.title)
+            row.norm_title = normalized_title
+            item_id = exact_lookup.get(normalized_title)
+            if item_id is None:
+                item_id = _best_fallback_item_id(normalized_title, token_index)
+
+            if item_id is not None and row.item_id != item_id:
+                row.item_id = item_id
+                updated += 1
+
+        if updated:
+            session.commit()
+
+    logger.info(f"Reconciled topsellers item links: {updated} row(s) updated")
+    return updated
+
+
 def save_to_database(games):
     try:
         insert_values = []
         skipped_free = 0
         ranking = 1
+        matched_count = 0
+        exact_lookup, token_index = build_item_title_lookup()
 
         for game in games:
             cleaned_title = clean_title(game['title'])
@@ -164,17 +277,28 @@ def save_to_database(games):
                 logger.warning(f"Skipping game with 0.00 price: '{cleaned_title}' (original: '{price_str}')")
                 continue
 
-            insert_values.append((ranking, cleaned_title, price_value))
+            normalized_title = normalize_steam_title(cleaned_title)
+            item_id = exact_lookup.get(normalized_title)
+            if item_id is None:
+                item_id = _best_fallback_item_id(normalized_title, token_index)
+
+            if item_id is not None:
+                matched_count += 1
+
+            insert_values.append((ranking, cleaned_title, normalized_title, price_value, item_id))
             ranking += 1
 
         if not insert_values:
             logger.error("No valid games to insert, keeping existing topsellers data")
             return False
 
-        count = insert_topsellers(insert_values)
+        inserted, skipped = insert_topsellers(insert_values)
         if skipped_free > 0:
             logger.warning(f"Skipped {skipped_free} games with free/invalid prices")
-        logger.info(f"Successfully inserted {count} top sellers into database")
+        logger.info(f"Successfully inserted {inserted} top sellers into database")
+        if skipped > 0:
+            logger.warning(f"Skipped {skipped} topsellers with validation errors")
+        logger.info(f"Matched {matched_count}/{inserted} topsellers to items by normalized title")
         return True
 
     except Exception as e:

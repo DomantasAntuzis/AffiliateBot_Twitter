@@ -3,7 +3,6 @@ Affiliate Bot - Main Entry Point
 Automated affiliate marketing bot that finds and posts game deals to Twitter
 """
 import sys
-import os
 import threading
 import signal
 import time
@@ -11,12 +10,11 @@ import uvicorn
 
 from utils.logger import logger
 from utils.helpers import ensure_directories
-from automation.scheduler import run_scheduler
-from routes.auth import auth_router
+# from routes.auth import auth_router
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routes.items import router as items_router
-from routes.admin import admin_router
+# from routes.admin import admin_router
 from routes.images import router as images_router
 
 
@@ -44,8 +42,8 @@ def run_api_server():
         
         # Include routers
         app.include_router(items_router, prefix="/api", tags=["offers"])
-        app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
-        app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
+        # app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+        # app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
         app.include_router(images_router, prefix="/api", tags=["images"])
         
         @app.get("/api")
@@ -68,7 +66,7 @@ def run_api_server():
 
 
 
-def signal_handler(signum, frame):
+def signal_handler():
     """Handle shutdown signals gracefully"""
     logger.info("Shutdown signal received, stopping services...")
     shutdown_event.set()
@@ -84,25 +82,20 @@ def main():
     logger.info("="*60)
     
     # Ensure all required directories exist
-    ensure_directories()
-    logger.info("Directories verified")
-    
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Start API server in a separate thread
-    api_thread = threading.Thread(target=run_api_server, daemon=True)
-    api_thread.start()
-    
-    # Give API server a moment to start
-    time.sleep(1)
+    try:
+        ensure_directories()
+        logger.info("Directories verified")
+        
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        run_api_server()
+                
+        # Give API server a moment to start
+        time.sleep(1)
     
     # Start scheduler in main thread (runs indefinitely)
-    try:
-        run_scheduler()
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)

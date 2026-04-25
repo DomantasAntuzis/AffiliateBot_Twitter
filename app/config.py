@@ -17,13 +17,20 @@ TWITTER_API_KEY_SECRET = os.getenv("TWITTER_API_KEY_SECRET")
 TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
 TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
 
-# Proxy configuration - DataImpulse US residential (sticky), env override via PROXY_URL
-PROXY_URL = "http://98586cab35e3ab79e17a__cr.us:55a1ee0461f0fb58@gw.dataimpulse.com:10000"
 # Database configuration
+
 DB_HOST = "localhost"
+
 DB_USER = "root"
+
 DB_PASSWORD = ""
+
 DB_NAME = "affiliate_marketing"
+
+# DB_HOST = os.getenv("DB_HOST")
+# DB_USER = os.getenv("DB_USER")
+# DB_PASSWORD = os.getenv("DB_PASSWORD")
+# DB_NAME = os.getenv("DB_NAME")
 
 # File paths
 DATA_DIR = os.path.join(SERVER_DIR, "data")
@@ -56,16 +63,21 @@ HOURS_BETWEEN_POSTS = 4
 STEAM_REGION = "US"
 STEAM_LANGUAGE = "en"
 
-# Browser pool settings
-BROWSER_POOL_SIZE = 3
-VALIDATION_WORKERS = 3
-
 # Authentication settings
-SECRET_KEY = os.getenv("JWT_SECRET_KEY") or "change-this-secret-key-in-production"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+# SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+# ALGORITHM = "HS256"
+# ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # CJ Affiliate
 # CJ_DATA_DATE = "TODAY"
 CJ_DATA_DATE = "YESTERDAY"
+
+# IsThereAnyDeal (ITAD) API
+# Register at https://isthereanydeal.com/dev/app/ to get your API key
+ITAD_API_KEY = os.getenv("ITAD_API_KEY")
+ITAD_COUNTRY = "US"  # ISO-3166 country code for price region
+ITAD_CURRENCY = "USD"
+
+# Stale offers deletion
+STALE_OFFERS_OLDER_THAN_DAYS = 3
 

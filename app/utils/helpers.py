@@ -51,6 +51,30 @@ def normalize_title(title):
     
     return normalized
 
+
+def normalize_match_title(title: str) -> str:
+    """Normalization used for cross-source title matching and persisted norm_title fields."""
+    normalized = normalize_title(title or "")
+    normalized = normalized.replace("'", "")
+
+    roman_map = {
+        "x": "10",
+        "ix": "9",
+        "viii": "8",
+        "vii": "7",
+        "vi": "6",
+        "v": "5",
+        "iv": "4",
+        "iii": "3",
+        "ii": "2",
+        "i": "1",
+    }
+    for roman, arabic in roman_map.items():
+        normalized = re.sub(rf"\b{roman}\b", arabic, normalized)
+
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized[:255]
+
 def normalize_distributor_name(program_name):
   program_name = program_name.strip()
   

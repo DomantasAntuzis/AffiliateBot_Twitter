@@ -6,8 +6,7 @@ Manages all scheduled jobs for the affiliate bot
 import datetime
 import random
 import time
-import schedule
-from database.queries.twitter_posts import get_recent_posted_titles
+from database.queries.twitter_posts import get_recent_posted_titles, get_today_post_count
 import config
 from services.affiliate_service import fetch_all_affiliate_products
 from services.deals_service import find_matching_deals
@@ -17,7 +16,7 @@ from services.igdb_data_service import (
     fetch_all_igdb_games,
 )
 from services.twitter_service import post_deal_to_twitter
-from utils.helpers import load_json_file, save_json_file
+from utils.helpers import save_json_file, load_json_file
 from utils.logger import logger
 from services.steam_service import fetch_and_save_steam_topsellers
 
@@ -50,6 +49,9 @@ def daily_data_collection():
             logger.warning("No matching deals found")
             return
 
+        logger.info("Step 4/4: Saving deal pool for independent posting job...")
+        save_json_file(config.SHUFFLED_DEALS_JSON, deals)
+
         end_time = time.time()
         elapsed_time = end_time - start_time
 
@@ -59,54 +61,52 @@ def daily_data_collection():
         )
         logger.info("=" * 60)
 
-        # Post first batch of tweets
-        post_tweets_batch(deals)
+        logger.info("Daily collection finished. Posting is handled by independent scheduled job.")
 
     except Exception as e:
-        logger.error(f"Error in daily data collection: {e}")
+        logger.error(f"Error in daily data collection: {e}", exc_info=True)
 
-def post_tweets_batch(deals_list):
-    """Post a batch of tweets (6 tweets, 4 hours apart)"""
-    logger.info("Starting tweet posting batch")
 
-    post_count = 0
+def post_single_tweet_job():
+    """
+    Independent posting job (single attempt per run).
+    This job is scheduled separately from daily collection, so crashes/restarts
+    do not block data collection and vice versa.
+    """
+    logger.info("Running independent tweet posting job")
 
-    while post_count < config.POSTS_PER_DAY:
-        try:
-            # Load posted games
-            posted_games_list = get_recent_posted_titles()
+    try:
+        today_posts = get_today_post_count()
+        if today_posts >= config.POSTS_PER_DAY:
+            logger.info(
+                f"Daily post limit reached ({today_posts}/{config.POSTS_PER_DAY}); skipping this run"
+            )
+            return
 
-            # Find a valid deal to post
-            deal = select_unposted_deal(deals_list, posted_games_list)
+        deals_list = load_json_file(config.SHUFFLED_DEALS_JSON)
+        if not deals_list:
+            logger.info("No cached deals found for posting; rebuilding deal pool")
+            deals_list = find_matching_deals()
+            if not deals_list:
+                logger.warning("Could not build deal pool for posting")
+                return
+            save_json_file(config.SHUFFLED_DEALS_JSON, deals_list)
 
-            if not deal:
-                logger.warning("No more deals to post")
-                break
+        posted_games_list = get_recent_posted_titles()
+        deal = select_unposted_deal(deals_list, posted_games_list)
+        if not deal:
+            logger.warning("No eligible deal available to post right now")
+            save_json_file(config.SHUFFLED_DEALS_JSON, deals_list)
+            return
 
-            # Post tweet
-            if post_deal_to_twitter(deal):
-                post_count += 1
-                logger.info(f"Posted {post_count}/{config.POSTS_PER_DAY} tweets")
+        if post_deal_to_twitter(deal):
+            save_json_file(config.SHUFFLED_DEALS_JSON, deals_list)
+            logger.info("Independent tweet posting job posted 1 tweet successfully")
+        else:
+            logger.error("Independent tweet posting job failed to post tweet")
 
-                # Save updated deals (with posted item removed)
-                save_json_file(config.SHUFFLED_DEALS_JSON, deals_list)
-
-                # Wait before next post (except for last post)
-                if post_count < config.POSTS_PER_DAY:
-                    sleep_time = config.HOURS_BETWEEN_POSTS * 60 * 60
-                    logger.info(
-                        f"Waiting {config.HOURS_BETWEEN_POSTS} hours before next post..."
-                    )
-                    time.sleep(sleep_time)
-            else:
-                logger.error("Failed to post tweet, continuing...")
-                continue
-
-        except Exception as e:
-            logger.error(f"Error in tweet posting: {e}")
-            continue
-
-    logger.info(f"Tweet posting batch completed. Posted {post_count} tweets.")
+    except Exception as e:
+        logger.error(f"Error in independent tweet posting job: {e}", exc_info=True)
 
 
 def select_unposted_deal(deals, posted_games_list):
@@ -140,12 +140,12 @@ def select_unposted_deal(deals, posted_games_list):
                 del deals[rng]
             attempts += 1
             continue
-        else:
-            # Found valid deal, remove it from list
-            deals[rng].pop(0)
-            if not deals[rng]:
-                del deals[rng]
-            return deal
+
+        # Found valid deal, remove it from list
+        deals[rng].pop(0)
+        if not deals[rng]:
+            del deals[rng]
+        return deal
 
     logger.warning(f"Could not find valid deal after {max_attempts} attempts")
     return None
@@ -198,31 +198,3 @@ def check_and_run_monthly_igdb():
     today = datetime.datetime.now()
     if today.day == 1:
         monthly_igdb_data_collection()
-
-
-def setup_scheduler():
-    now = datetime.datetime.now() + datetime.timedelta(minutes=1)
-    run_time = now.strftime("%H:%M")
-
-    schedule.every().day.at(run_time).do(daily_data_collection)
-
-    schedule.every().day.at("02:00").do(check_and_run_monthly_igdb).tag("monthly_igdb")
-
-    logger.info("=" * 60)
-    logger.info("Scheduler initialized!")
-    logger.info(f"Daily job scheduled for {run_time}")
-    logger.info("Monthly IGDB data collection scheduled for 1st of each month at 02:00")
-    logger.info(f"Next daily run: {schedule.next_run()}")
-    logger.info("=" * 60)
-
-
-def run_scheduler():
-    """
-    Run the scheduler loop
-    Checks for pending tasks every 60 seconds
-    """
-    setup_scheduler()
-
-    while True:
-        schedule.run_pending()
-        time.sleep(60)

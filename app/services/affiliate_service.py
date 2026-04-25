@@ -1,28 +1,21 @@
 """
 Affiliate service - handles fetching and processing affiliate product data
-Supports CJ Affiliate API and IndieGala web scraping
+Sources: CJ Affiliate (GOG, GamersGate, YUPLAY, others) + IndieGala via ITAD
 """
 import requests
 import os
 import zipfile
 import csv
-import time
 from datetime import datetime, timedelta
-from seleniumwire import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-import html
 import config
 
 from database.queries.items import (
   batch_insert_offers,
   batch_lookup_item_ids,
   batch_lookup_distributor_ids,
+  delete_stale_offers,
 )
+from services.itad_service import fetch_indiegala_deals, fetch_gamersgate_deals, fetch_gog_deals
 from utils.helpers import normalize_title, normalize_distributor_name
 from utils.logger import logger
 
@@ -60,156 +53,6 @@ def get_affiliate_products_from_csv():
     logger.error(f"Error reading products CSV: {e}")
     return []
 
-def fetch_gamersgate_page(session, page=1, platform="pc", timestamp=None):
-  if timestamp is None:
-    timestamp = int(time.time() * 1000)
-  
-  url = "https://www.gamersgate.com/api/offers/"
-  params = {
-  "platform": platform,
-  "timestamp": timestamp,
-  "need_change_browser_url": "true",
-  "activations": 1
-  }
-  
-  if page > 1:
-    params["page"] = page
-  
-  headers = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-  "Accept": "application/json",
-  "Referer": "https://www.gamersgate.com/offers/",
-  }
-  
-  try:
-    response = session.get(url, params=params, headers=headers, timeout=30)
-    response.raise_for_status()
-    data = response.json()
-    return data
-  except Exception as e:
-    logger.warning(f"Error fetching GamersGate page {page}: {str(e)[:100]}")
-    return None
-
-def parse_gamersgate_item(item):
-  
-  # Clean prices (remove HTML entities and currency symbols)
-  baseprice = item.get("baseprice", "")
-  if baseprice:
-    baseprice = html.unescape(baseprice)
-    baseprice = baseprice.replace("&nbsp;", " ").replace("€", "").replace("$", "").replace("£", "").replace("¥", "").strip()
-  raw_price = item.get("raw_price", "").strip()
-  if raw_price:
-    raw_price = raw_price.replace("€", "").replace("$", "").replace("£", "").replace("¥", "").strip()
-  parsed = {
-    "name": item.get("name", "").strip(),
-    "discount_percent": item.get("discount_percent", 0),
-    "raw_price": raw_price,
-    "is_available": item.get("is_available", False),
-    "baseprice": baseprice,
-  }
-  
-  return parsed
-
-def insert_gamersgate_offers():
-  try:
-    logger.info("Fetching GamersGate offers from API...")
-    proxy_url = config.PROXY_URL
-    session = requests.Session()
-    session.proxies = {"http": proxy_url, "https": proxy_url}
-
-    all_gamersgate_offers = []
-    platform = "pc"
-    page = 1
-    previous_page_names = None
-    session_timestamp = int(time.time() * 1000)
-    consecutive_failures = 0
-    max_consecutive_failures = 3
-
-    while True:
-      data = fetch_gamersgate_page(session=session, page=page, platform=platform, timestamp=session_timestamp)
-      if not data:
-        consecutive_failures += 1
-        if consecutive_failures >= max_consecutive_failures:
-          logger.warning(f"GamersGate: Stopped after {max_consecutive_failures} failed page requests")
-          break
-        page += 1
-        time.sleep(1)
-        continue
-      catalog = data.get("catalog", [])
-      if not catalog:
-        break
-      parsed_items = [parse_gamersgate_item(i) for i in catalog]
-      current_names = [item.get("name") for item in parsed_items]
-      if previous_page_names is not None:
-        current_sample = current_names[:5] if len(current_names) >= 5 else current_names
-        previous_sample = previous_page_names[:5] if len(previous_page_names) >= 5 else previous_page_names
-        if current_sample == previous_sample:
-          break
-      all_gamersgate_offers.extend(parsed_items)
-      previous_page_names = current_names
-      consecutive_failures = 0
-      page += 1
-      time.sleep(1.5)
-
-    session.close()
-    logger.info(f"Collected {len(all_gamersgate_offers)} GamersGate offers from {page-1} pages")
-
-    affiliate_products = get_affiliate_products_from_csv()
-    if not affiliate_products:
-      logger.error("No affiliate products found in CSV")
-      return False
-
-    affiliate_map = {}
-    for product in affiliate_products:
-      title = product.get("TITLE", "").strip()
-      program_name = product.get("PROGRAM_NAME", "").strip()
-      if title and program_name == "GamersGate.com" and normalize_title(title) not in affiliate_map:
-        affiliate_map[normalize_title(title)] = product
-
-    logger.info(f"Found {len(affiliate_map)} GamersGate affiliate products in CSV")
-  
-    matched_offers = []
-    for gg_offer in all_gamersgate_offers:
-      gg_title = gg_offer.get("name", "").strip()
-      if not gg_title or not gg_offer.get("is_available") or not gg_offer.get("raw_price", "").strip():
-        continue
-      affiliate_product = affiliate_map.get(normalize_title(gg_title))
-      if not affiliate_product:
-        continue
-      sale_price = gg_offer.get("raw_price", "").strip()
-      baseprice = gg_offer.get("baseprice", "").strip()
-      discount_percent = gg_offer.get("discount_percent", 0)
-      if not baseprice and discount_percent > 0 and sale_price:
-        try:
-          sale_float = float(sale_price.replace("$", "").replace(",", "").strip())
-          baseprice = str(round(sale_float / (1 - discount_percent / 100), 2))
-        except Exception:
-          pass
-      if baseprice and sale_price:
-        matched_offers.append({
-          "TITLE": gg_title,
-          "PROGRAM_NAME": "GamersGate.com",
-          "LINK": affiliate_product.get("LINK", "").strip(),
-          "IMAGE_LINK": affiliate_product.get("IMAGE_LINK", "").strip(),
-          "PRICE": baseprice,
-          "SALE_PRICE": sale_price,
-          "DISCOUNT": str(discount_percent)
-        })
-
-    logger.info(f"Matched {len(matched_offers)} GamersGate offers with affiliate products")
-    if not matched_offers:
-      logger.warning("No matched GamersGate offers to insert")
-      return True
-    try:
-      insert_offers_to_database(matched_offers)
-      logger.info("Successfully processed GamersGate offers")
-      return True
-    except Exception as e:
-      logger.error(f"Error inserting GamersGate offers: {e}")
-      return False
-  except Exception as e:
-    logger.error(f"Error in insert_gamersgate_offers: {e}")
-    return False
 
 
 # ============================================================================
@@ -276,139 +119,6 @@ def extract_zip_file(zip_path):
 
 
 # ============================================================================
-# INDIEGALA SCRAPING FUNCTIONS
-# ============================================================================
-
-def fetch_indiegala_data():
-  url = "https://www.indiegala.com/store/games/on-sale"
-  
-  chrome_options = Options()
-  prefs = {
-  'profile.default_content_setting_values': {
-		'cookies': 2, 'images': 2, 'plugins': 2, 'popups': 2, 'geolocation': 2,
-		'notifications': 2, 'auto_select_certificate': 2, 'fullscreen': 2,
-		'mouselock': 2, 'mixed_script': 2, 'media_stream': 2,
-		'media_stream_mic': 2, 'media_stream_camera': 2, 'protocol_handlers': 2,
-		'ppapi_broker': 2, 'automatic_downloads': 2, 'midi_sysex': 2,
-		'push_messaging': 2, 'ssl_cert_decisions': 2, 'metro_switch_to_desktop': 2,
-		'protected_media_identifier': 2, 'app_banner': 2, 'site_engagement': 2,
-		'durable_storage': 2
-  }
-  }
-  
-  chrome_options.add_experimental_option('prefs', prefs)
-  chrome_options.add_argument("--headless=new")
-  chrome_options.add_argument("--disable-gpu")
-  chrome_options.add_argument("--window-size=1920,1080")
-  chrome_options.add_argument("--no-sandbox")
-  chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-
-  proxy_url = config.PROXY_URL
-  if proxy_url:
-    sw_options = {
-      "proxy": {"http": proxy_url, "https": proxy_url, "no_proxy": "localhost,127.0.0.1"},
-      "verify_ssl": False,
-    }
-    driver = webdriver.Chrome(
-      service=Service(ChromeDriverManager().install()),
-      seleniumwire_options=sw_options,
-      options=chrome_options,
-    )
-  
-  # Set timeouts for faster page loads
-  driver.set_page_load_timeout(20)  # Max 20 seconds per page
-  driver.implicitly_wait(2)  # Reduced implicit wait
-  
-  try:
-    driver.get(url)
-    wait = WebDriverWait(driver, 5)
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".relative.main-list-results-item")))
-    game_products = []
-    seen_titles = set()
-    duplicate_count = 0
-    next_nr = 2
-    consecutive_failures = 0
-    max_failures = 3
-    while True:
-      game_cards = driver.find_elements(By.CSS_SELECTOR, ".relative.main-list-results-item")
-      if not game_cards:
-        logger.warning("No game cards found on page, stopping")
-        break
-      for game_card in game_cards:
-        try:
-          game_title = game_card.find_element(By.CSS_SELECTOR, "h3.bg-gradient-red").text
-          if game_title in seen_titles:
-            duplicate_count += 1
-            continue
-          seen_titles.add(game_title)
-          game_discount = game_card.find_element(By.CSS_SELECTOR, "div.main-list-results-item-discount").text.replace("%", "").replace("-", "")
-          game_price = game_card.find_element(By.CSS_SELECTOR, "div.main-list-results-item-price-new").text
-          game_link = game_card.find_element(By.CSS_SELECTOR, "figure.relative a").get_attribute("href")
-          game_affiliate_link = game_link + '?ref=mzvkywq'
-          try:
-            game_image = game_card.find_element(By.CSS_SELECTOR, "figure.relative img.async-img-load.display-none").get_attribute("src")
-          except Exception:
-            game_image = ""
-          original_price = ""
-          try:
-            original_price_elem = game_card.find_element(By.CSS_SELECTOR, "div.main-list-results-item-price-old")
-            original_price = original_price_elem.text.replace(" ", "")
-          except Exception:
-            pass
-          try:
-            discount_percent = int(game_discount) if game_discount else 0
-          except Exception:
-            discount_percent = 0
-          product = {
-            "PROGRAM_NAME": "IndieGala",
-            "ID": f"IG-{game_title.replace(' ', '-').replace(':', '')[:50]}",
-            "TITLE": game_title,
-            "LINK": game_affiliate_link,
-            "IMAGE_LINK": game_image,
-            "AVAILABILITY": "in stock",
-            "PRICE": original_price if original_price else game_price.replace(" ", ""),
-            "SALE_PRICE": game_price.replace(" ", ""),
-            "DISCOUNT": str(discount_percent) if discount_percent > 0 else ""
-          }
-          game_products.append(product)
-        except Exception as e:
-          logger.debug(f"Error parsing game card: {e}")
-      try:
-        next_button = None
-        selectors = [f"a[onclick*='/{next_nr}']", f"a[href*='/{next_nr}']", f"a:contains('{next_nr}')"]
-        for selector in selectors:
-          try:
-            next_button = driver.find_element(By.CSS_SELECTOR, selector)
-            if next_button and next_button.is_displayed():
-              break
-          except Exception:
-            continue
-        if next_button and next_button.is_displayed():
-          driver.execute_script("arguments[0].click();", next_button)
-          next_nr += 1
-          consecutive_failures = 0
-          try:
-            WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".relative.main-list-results-item")))
-            time.sleep(0.5)
-          except Exception:
-            break
-        else:
-          break
-      except Exception as e:
-        consecutive_failures += 1
-        logger.warning(f"Error navigating to page {next_nr}: {e}")
-        if consecutive_failures >= max_failures:
-          break
-    logger.info(f"IndieGala: Fetched {len(game_products)} products")
-    return game_products
-  except Exception as e:
-    logger.error(f"Error scraping IndieGala: {e}")
-    return None
-  finally:
-    driver.quit()
-
-
-# ============================================================================
 # UNIFIED PRODUCT LIST (used for both DB insert and deals matching)
 # ============================================================================
 
@@ -416,6 +126,7 @@ FIELDS = ["PROGRAM_NAME", "ID", "TITLE", "LINK", "IMAGE_LINK", "AVAILABILITY", "
 
 
 def build_items_info_csv():
+  # --- Step 1: CJ Affiliate feed ---
   cj_data_files = fetch_cj_data_files()
   if cj_data_files is None:
     logger.error("Failed to fetch CJ products")
@@ -434,122 +145,107 @@ def build_items_info_csv():
     except Exception as e:
       logger.error(f"Error processing {data_file}: {e}")
 
-  cj_non_gg = [r for r in cj_rows if r.get("PROGRAM_NAME", "").strip() != "GamersGate.com"]
+  # Separate GG and GOG rows – CJ prices for both are replaced with live
+  # ITAD prices in Steps 3 & 4 below; only CJ affiliate URLs are kept.
   cj_gg = [r for r in cj_rows if r.get("PROGRAM_NAME", "").strip() == "GamersGate.com"]
-  logger.info(f"Step 1: CJ base loaded ({len(cj_non_gg)} non-GG, {len(cj_gg)} GG)")
+  cj_gog = [r for r in cj_rows if r.get("PROGRAM_NAME", "").strip() == "GOG.COM INT"]
+  cj_non_gg = [r for r in cj_rows if r.get("PROGRAM_NAME", "").strip() not in ("GamersGate.com", "GOG.COM INT")]
+  logger.info(f"Step 1: CJ feed loaded ({len(cj_non_gg)} other + {len(cj_gg)} GG + {len(cj_gog)} GOG rows)")
 
-  indiegala_products = fetch_indiegala_data()
-  if indiegala_products is None:
-    indiegala_products = []
-  indiegala_rows = []
-  for p in indiegala_products:
-    indiegala_rows.append({f: str(p.get(f, "")).replace("\n", " ").replace("\r", " ").replace("\t", " ").strip() for f in FIELDS})
-  logger.info(f"Step 2: IndieGala ADDED ({len(indiegala_rows)} rows)")
+  # --- Step 2: IndieGala via ITAD ---
+  itad_indiegala = fetch_indiegala_deals(country=config.ITAD_COUNTRY, currency=config.ITAD_CURRENCY)
+  indiegala_rows = [
+    {f: str(p.get(f, "")).replace("\n", " ").replace("\r", " ").replace("\t", " ").strip() for f in FIELDS}
+    for p in itad_indiegala
+  ]
+  logger.info(f"Step 2: IndieGala via ITAD ({len(indiegala_rows)} rows)")
 
-  affiliate_map = {}
-  for p in cj_gg:
-    t = p.get("TITLE", "").strip()
-    if t and normalize_title(t) not in affiliate_map:
-      affiliate_map[normalize_title(t)] = p
-  matched_gg = fetch_and_match_gamersgate_offers(affiliate_map)
-  scraped_titles = {normalize_title(m["TITLE"]) for m in matched_gg}
-  cj_gg_keep = [r for r in cj_gg if normalize_title(r.get("TITLE", "")) not in scraped_titles]
-  logger.info(f"Step 3: GamersGate REPLACED (matched {len(matched_gg)}, kept {len(cj_gg_keep)} fallback)")
+  # --- Step 3: GamersGate via ITAD + CJ affiliate URLs ---
+  # Build title→CJ-row map so we can attach the CJ affiliate link to each
+  # ITAD deal (CJ link is required for affiliate commission tracking).
+  gg_affiliate_map = {}
+  for r in cj_gg:
+    t = r.get("TITLE", "").strip()
+    norm = normalize_title(t)
+    if norm and norm not in gg_affiliate_map:
+      gg_affiliate_map[norm] = r
 
-  raw = cj_non_gg + indiegala_rows + cj_gg_keep + matched_gg
+  itad_gg = fetch_gamersgate_deals(country=config.ITAD_COUNTRY, currency=config.ITAD_CURRENCY)
+  gg_rows = []
+  for deal in itad_gg:
+    title = deal["title"]
+    norm = normalize_title(title)
+    cj_match = gg_affiliate_map.get(norm)
+    if not cj_match:
+      continue  # Skip GG deals with no CJ affiliate link
+    gg_rows.append({
+      "PROGRAM_NAME": "GamersGate.com",
+      "ID":           cj_match.get("ID", ""),
+      "TITLE":        title,
+      "LINK":         cj_match.get("LINK", deal["store_url"]),
+      "IMAGE_LINK":   cj_match.get("IMAGE_LINK", ""),
+      "AVAILABILITY": "in stock",
+      "PRICE":        deal["price"],
+      "SALE_PRICE":   deal["sale_price"],
+      "DISCOUNT":     deal["discount"],
+    })
+  logger.info(f"Step 3: GamersGate via ITAD – {len(gg_rows)} matched rows "
+              f"({len(itad_gg)} ITAD deals, {len(gg_affiliate_map)} CJ affiliate links)")
+
+  # --- Step 4: GOG via ITAD + CJ affiliate URLs ---
+  gog_affiliate_map = {}
+  for r in cj_gog:
+    t = r.get("TITLE", "").strip()
+    norm = normalize_title(t)
+    if norm and norm not in gog_affiliate_map:
+      gog_affiliate_map[norm] = r
+
+  itad_gog = fetch_gog_deals(country=config.ITAD_COUNTRY, currency=config.ITAD_CURRENCY)
+  gog_rows = []
+  for deal in itad_gog:
+    title = deal["title"]
+    norm = normalize_title(title)
+    cj_match = gog_affiliate_map.get(norm)
+    if not cj_match:
+      continue  # Skip GOG deals with no CJ affiliate link
+    gog_rows.append({
+      "PROGRAM_NAME": "GOG.COM INT",
+      "ID":           cj_match.get("ID", ""),
+      "TITLE":        title,
+      "LINK":         cj_match.get("LINK", deal["store_url"]),
+      "IMAGE_LINK":   cj_match.get("IMAGE_LINK", ""),
+      "AVAILABILITY": "in stock",
+      "PRICE":        deal["price"],
+      "SALE_PRICE":   deal["sale_price"],
+      "DISCOUNT":     deal["discount"],
+    })
+  logger.info(f"Step 4: GOG via ITAD – {len(gog_rows)} matched rows "
+              f"({len(itad_gog)} ITAD deals, {len(gog_affiliate_map)} CJ affiliate links)")
+
+  # --- Step 5: Merge + fill missing discounts for CJ-only stores ---
+  raw = cj_non_gg + indiegala_rows + gg_rows + gog_rows
   products = []
   for r in raw:
     price = r.get("PRICE", "").strip()
     sale = r.get("SALE_PRICE", "").strip()
-    discount = r.get("DISCOUNT", "").strip()
     if not price or not sale:
       continue
+    discount = r.get("DISCOUNT", "").strip()
     if not discount or discount == "0":
-      discount = str(calculate_discount(price, sale))
-      r["DISCOUNT"] = discount
-    if discount:
-      products.append(r)
-  logger.info(f"Step 4: Discounts calculated/applied where missing, {len(products)} rows ready")
+      computed = calculate_discount(price, sale)
+      if computed > 0:
+        r["DISCOUNT"] = str(computed)
+    products.append(r)
+  logger.info(f"Step 5: Merged – {len(products)} rows with valid prices")
 
+  # --- Step 6: Write CSV ---
   os.makedirs(config.CSV_DIR, exist_ok=True)
   with open(config.PRODUCTS_CSV, "w", newline='', encoding="utf-8") as f:
     writer = csv.DictWriter(f, fieldnames=FIELDS, quoting=csv.QUOTE_MINIMAL)
     writer.writeheader()
     writer.writerows(products)
-  logger.info(f"Step 5: Wrote {config.PRODUCTS_CSV} with {len(products)} rows")
+  logger.info(f"Step 6: Wrote {config.PRODUCTS_CSV} with {len(products)} rows")
   return products
-
-def fetch_and_match_gamersgate_offers(affiliate_map):
-  try:
-    proxy_url = config.PROXY_URL
-    session = requests.Session()
-    session.proxies = {"http": proxy_url, "https": proxy_url}
-
-    all_gg = []
-    page = 1
-    prev_names = None
-    ts = int(time.time() * 1000)
-    fails = 0
-    while True:
-      data = fetch_gamersgate_page(session=session, page=page, platform="pc", timestamp=ts)
-      if not data:
-        fails += 1
-        if fails >= 3:
-          break
-        page += 1
-        time.sleep(1)
-        continue
-      cat = data.get("catalog", [])
-      if not cat:
-        break
-      parsed = [parse_gamersgate_item(i) for i in cat]
-      names = [x.get("name") for x in parsed]
-      if prev_names:
-        s1 = names[:5] if len(names) >= 5 else names
-        s2 = prev_names[:5] if len(prev_names) >= 5 else prev_names
-        if s1 == s2:
-          break
-      all_gg.extend(parsed)
-      prev_names = names
-      fails = 0
-      page += 1
-      time.sleep(1.5)
-    session.close()
-
-    matched = []
-    for gg in all_gg:
-      title = gg.get("name", "").strip()
-      if not title or not gg.get("is_available") or not gg.get("raw_price", "").strip():
-        continue
-      aff = affiliate_map.get(normalize_title(title))
-      if not aff:
-        continue
-      sp = gg.get("raw_price", "").strip()
-      bp = gg.get("baseprice", "").strip()
-      d = gg.get("discount_percent", 0)
-      if not bp and d > 0 and sp:
-        try:
-          bp = str(round(float(sp.replace("$", "").replace(",", "").strip()) / (1 - d / 100), 2))
-        except Exception:
-          pass
-      if bp and sp:
-        matched.append({
-          "PROGRAM_NAME": "GamersGate.com",
-          "ID": aff.get("ID", ""),
-          "TITLE": title,
-          "LINK": aff.get("LINK", "").strip(),
-          "IMAGE_LINK": aff.get("IMAGE_LINK", "").strip(),
-          "AVAILABILITY": "in stock",
-          "PRICE": bp,
-          "SALE_PRICE": sp,
-          "DISCOUNT": str(d)
-        })
-    logger.info(f"GamersGate: matched {len(matched)} offers")
-    return matched
-  except Exception as e:
-    logger.error(f"Error fetching/matching GamersGate: {e}")
-    return []
-
 
 # ============================================================================
 # CSV PROCESSING & DATABASE INSERTION FUNCTIONS
@@ -579,8 +275,11 @@ def insert_offers_to_database(all_rows_data):
   query_values, stats = prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map)
 
   if query_values:
-    count = batch_insert_offers(query_values)
-    logger.info(f"Inserted {count} offers into database")
+    inserted, skipped = batch_insert_offers(query_values)
+    delete_stale_offers()
+    logger.info(f"Inserted {inserted} offers into database")
+    if skipped > 0:
+      logger.warning(f"Skipped {skipped} offers with validation errors")
   else:
     logger.warning("No valid products to insert into database")
 
@@ -677,7 +376,6 @@ def prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
       distributor_stats[program_name]['discount_too_low'] += 1
       continue
 
-    is_valid = 1
     query_values.append((
       item_id,
       distributor_id,
@@ -686,7 +384,6 @@ def prepare_offer_inserts(all_rows_data, item_id_map, distributor_id_map):
       list_price_float,
       sale_price_float,
       discount,
-      is_valid
     ))
     distributor_stats[program_name]['valid'] += 1
 

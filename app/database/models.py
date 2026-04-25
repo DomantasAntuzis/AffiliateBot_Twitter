@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from sqlmodel import Field, Relationship, SQLModel, Enum as SQLModelEnum
+from sqlmodel import Field, SQLModel, Enum as SQLModelEnum
 
 #ITEM TYPE ENUM
 class ItemType(str, Enum):
@@ -9,70 +9,55 @@ class ItemType(str, Enum):
     bundle = "bundle"
     software = "software"
 
-#USER ROLE ENUM
-class UserRole(str, Enum):
-    admin = "admin"
-    user = "visitor"
-
 class ItemGenre(SQLModel, table=True):
     __tablename__ = "item_genres"
-    item_id: int | None = Field(default=None, foreign_key="items.id", primary_key=True)
-    genre_id: int | None = Field(default=None, foreign_key="genres.id", primary_key=True)
+    item_id: int = Field(foreign_key="items.id", primary_key=True)
+    genre_id: int = Field(foreign_key="genres.id", primary_key=True, index=True)
 
 class Distributor(SQLModel, table=True):
     __tablename__ = "distributors"
     id: int | None = Field(default=None, primary_key=True)
-    name: str = Field(max_length=100)
+    name: str = Field(max_length=100, index=True)
     url: str = Field(max_length=255)
 
 class Genre(SQLModel, table=True):
     __tablename__ = "genres"
     id: int | None = Field(default=None, primary_key=True)
-    name: str = Field(max_length=50)
+    name: str = Field(max_length=50, index=True)
 
 class Item(SQLModel, table=True):
     __tablename__ = "items"
     id: int | None = Field(default=None, primary_key=True)
     title: str = Field(max_length=255)
+    norm_title: str = Field(max_length=255, index=True)
     item_type: ItemType = Field(
         sa_type=SQLModelEnum(ItemType, values_callable=lambda x: [e.value for e in x], native_enum=False)
     )
-    igdb_id: int | None = Field(default=None)
-    igdb_cover_image_id: str | None = Field(default=None, max_length=255)
+    igdb_id: int = Field(index=True)
+    igdb_cover_image_id: str = Field(max_length=255, index=True)
 
 class Offer(SQLModel, table=True):
     __tablename__ = "offers"
     id: int | None = Field(default=None, primary_key=True)
-    item_id: int | None = Field(foreign_key="items.id")
-    distributor_id: int | None = Field(foreign_key="distributors.id")
+    item_id: int = Field(foreign_key="items.id", index=True)
+    distributor_id: int = Field(foreign_key="distributors.id", index=True)
     affiliate_url: str = Field(max_length=500)
-    image_url: str | None = Field(default=None, max_length=500)
-    list_price: float = Field(default=None, decimal_places=2)
+    image_url: str = Field(max_length=500)
+    list_price: float = Field(decimal_places=2)
     sale_price: float = Field(decimal_places=2)
-    discount: int = Field()
+    discount: int = Field(default=0)
     fetched_at: datetime = Field(default_factory=datetime.now)
-    
-    # Control Flags
-    is_manually_edited: bool = Field(default=False)
-    is_hidden: bool = Field(default=False)
-    is_valid: bool = Field(default=True)
 
 class TwitterPost(SQLModel, table=True):
     __tablename__ = "twitter_posts"
     id: int | None = Field(default=None, primary_key=True)
-    offer_id: int = Field(foreign_key="offers.id")
+    offer_id: int = Field(foreign_key="offers.id", index=True)
     posted_at: datetime = Field(default_factory=datetime.now)
-
-class User(SQLModel, table=True):
-    __tablename__ = "users"
-    id: int | None = Field(default=None, primary_key=True)
-    username: str = Field(max_length=50, unique=True)
-    password_hash: str = Field(max_length=255)
-    role: UserRole
-    created_at: datetime = Field(default_factory=datetime.now)
 
 class TopSeller(SQLModel, table=True):
     __tablename__ = "topsellers"
-    id: int = Field(primary_key=True)
+    id: int = Field(default=None, primary_key=True, index=True)
+    item_id: int | None = Field(default=None,foreign_key="items.id")
     title: str = Field(max_length=255)
+    norm_title: str = Field(max_length=255, index=True)
     price: float = Field(decimal_places=2)

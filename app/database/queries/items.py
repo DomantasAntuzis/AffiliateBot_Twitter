@@ -3,19 +3,21 @@ from typing import Optional, List
 from database.db_session import get_session
 from database.models import Genre, Item, Offer, Distributor, TopSeller, ItemGenre, ItemType
 from sqlmodel import select, Session, func, or_
-from utils.helpers import normalize_title
+from utils.helpers import normalize_title, normalize_match_title
+from utils.logger import logger
+from Levenshtein import ratio
+from pydantic import ValidationError
+from datetime import datetime, timedelta
+import config
 
-try:
-	from Levenshtein import ratio
-except ImportError:
-	def ratio(s1: str, s2: str) -> float:
-		if not s1 or not s2:
-			return 0.0
-		s1_set = set(s1.lower())
-		s2_set = set(s2.lower())
-		if not s1_set:
-			return 0.0
-		return len(s1_set & s2_set) / len(s1_set)
+def ratio(s1: str, s2: str) -> float:
+    if not s1 or not s2:
+        return 0.0
+    s1_set = set(s1.lower())
+    s2_set = set(s2.lower())
+    if not s1_set:
+        return 0.0
+    return len(s1_set & s2_set) / len(s1_set)
 
 def get_genres():
 	with get_session() as session:
@@ -70,9 +72,6 @@ def get_offers(
 		statement = statement.join(Item, Offer.item_id == Item.id)
 		statement = statement.join(Distributor, Offer.distributor_id == Distributor.id)
 
-		# 3. Always filter out hidden items
-		statement = statement.where(Offer.is_hidden == False)
-
 		# 4. Dynamic Filtering
 		if genre_ids:
 			statement = statement.join(ItemGenre, Offer.item_id == ItemGenre.item_id)
@@ -123,12 +122,8 @@ def get_topsellers(
 			.distinct()
 			.join(Item, Offer.item_id == Item.id)
 			.join(Distributor, Offer.distributor_id == Distributor.id)
-			.join(TopSeller, Item.title == TopSeller.title)
+			.join(TopSeller, Item.id == TopSeller.item_id)
 		)
-
-		# Required Filters
-		statement = statement.where(Offer.is_valid == True)
-		statement = statement.where(Offer.is_hidden == False)
 
 		# Optional Genre Filter
 		if genre_ids:
@@ -213,7 +208,6 @@ def search_offers(
 			select(Offer, Item.title, Item.igdb_cover_image_id, Distributor.name)
 			.join(Item, Offer.item_id == Item.id)
 			.join(Distributor, Offer.distributor_id == Distributor.id)
-			.where(Offer.is_hidden == False)
 			.where(or_(*(clean_title_sql.like(p) for p in set(patterns))))
 			.limit(2000)
 		)
@@ -224,6 +218,12 @@ def search_offers(
 		scored_offers = []
 		for offer_obj, title, cover_id, dist_name in candidates:
 			norm_title = normalize_title(title)
+			if norm_title.startswith(normalized_query):
+				match_tier = 0
+			elif normalized_query in norm_title:
+				match_tier = 1
+			else:
+				continue
 				
 			# Similarity Scoring
 			lev_score = ratio(normalized_query, norm_title)
@@ -245,36 +245,40 @@ def search_offers(
 					"item_title": title,
 					"igdb_cover_image_id": cover_id,
 					"distributor_name": dist_name,
+					"match_tier": match_tier,
 					"relevance": combined_score
 				})
 				scored_offers.append(data)
 
 		# 4. Sorting (after loop completes)
 		if sort_by == "discount_desc":
-			scored_offers.sort(key=lambda x: (x.get('discount', 0), x['relevance']), reverse=True)
+			scored_offers.sort(key=lambda x: (x['match_tier'], -x.get('discount', 0), -x['relevance']))
 		elif sort_by == "discount_asc":
-			scored_offers.sort(key=lambda x: (x.get('discount', 0), -x['relevance']))
+			scored_offers.sort(key=lambda x: (x['match_tier'], x.get('discount', 0), -x['relevance']))
 		else:
-			scored_offers.sort(key=lambda x: x['relevance'], reverse=True)
+			scored_offers.sort(key=lambda x: (x['match_tier'], -x['relevance']))
 
 		# 5. Final Pagination & Cleanup
 		paginated = scored_offers[offset:offset + limit]
 		for item in paginated:
+			item.pop('match_tier', None)
 			item.pop('relevance', None)
 
 		return paginated
 
-def batch_insert_offers(query_values: list[tuple]) -> int:
+def batch_insert_offers(query_values: list[tuple]) -> tuple[int, int]:
 	"""
-	Batch insert/upsert offers. Accepts list of tuples:
-	(item_id, distributor_id, affiliate_url, image_url, list_price, sale_price, discount, is_valid)
-	Only updates if is_manually_edited is False (preserves admin edits).
+	Batch insert/upsert offers. Accepts list of tuples
+	Returns (inserted, skipped) counts.
 	"""
 	if not query_values:
-		return 0
+		return 0, 0
 
 	item_ids = list({v[0] for v in query_values})
 	distributor_ids = list({v[1] for v in query_values})
+
+	inserted = 0
+	skipped = 0
 
 	with get_session() as session:
 		existing = session.exec(
@@ -286,32 +290,54 @@ def batch_insert_offers(query_values: list[tuple]) -> int:
 		existing_map = {(o.item_id, o.distributor_id): o for o in existing}
 
 		for v in query_values:
-			item_id, dist_id, aff_url, img_url, list_p, sale_p, discount_val, is_valid = v
-			key = (item_id, dist_id)
-			if key in existing_map:
-				offer = existing_map[key]
-				if offer is not None and not offer.is_manually_edited:
-					offer.affiliate_url = aff_url
-					offer.image_url = img_url
-					offer.list_price = list_p
-					offer.sale_price = sale_p
-					offer.discount = discount_val
-					offer.is_valid = is_valid
-			else:
-				new_offer = Offer(
-					item_id=item_id,
-					distributor_id=dist_id,
-					affiliate_url=aff_url,
-					image_url=img_url,
-					list_price=list_p,
-					sale_price=sale_p,
-					discount=discount_val,
-					is_valid=is_valid,
-				)
-				session.add(new_offer)
-				existing_map[key] = new_offer  # Avoid duplicate add if same key appears again in batch
-		session.commit()
-	return len(query_values)
+			try:
+				item_id, dist_id, aff_url, img_url, list_p, sale_p, discount_val = v
+				key = (item_id, dist_id)
+				if key in existing_map:
+					offer = existing_map[key]
+					#every offer that already exists in db needs to have its fetched_at dzte reset
+					#for removing stale offers
+					offer.fetched_at = datetime.now()
+					if offer is not None:
+						offer.affiliate_url = aff_url
+						offer.image_url = img_url
+						offer.list_price = list_p
+						offer.sale_price = sale_p
+						offer.discount = discount_val
+					inserted += 1
+				else:
+					new_offer = Offer(
+						item_id=item_id,
+						distributor_id=dist_id,
+						affiliate_url=aff_url,
+						image_url=img_url,
+						list_price=list_p,
+						sale_price=sale_p,
+						discount=discount_val
+					)
+					session.add(new_offer)
+					existing_map[key] = new_offer  # Avoid duplicate add if same key appears again in batch
+				inserted += 1
+			except (ValueError, ValidationError, TypeError, KeyError) as e:
+				skipped += 1
+				logger.warning(f"Skipped offer (item_id={item_id if 'item_id' in locals() else '?'}, dist_id={dist_id if 'dist_id' in locals() else '?'}): {str(e)}")
+		if inserted > 0:
+			session.commit()
+		if skipped > 0:
+			logger.info(f"Batch inserted {inserted} offers, skipped {skipped} with validation errors")
+	return inserted, skipped
+
+def delete_stale_offers(older_than_days: int = config.STALE_OFFERS_OLDER_THAN_DAYS) -> int:
+    stale_date = datetime.now() - timedelta(days=older_than_days)
+    with get_session() as session:
+        stale = session.exec(
+            select(Offer).where(Offer.fetched_at < stale_date)
+        ).all()
+        count = len(stale)
+        for offer in stale:
+            session.delete(offer)
+        session.commit()
+    return count
 
 
 def batch_lookup_item_ids(unique_titles: set,) -> dict:
@@ -400,53 +426,116 @@ def get_distinct_item_ids_with_genres(session: Session | None = None) -> set[int
 			session.close()
 
 
-def batch_upsert_genres(genres: list[tuple[int, str]], session: Session | None = None) -> None:
-	"""Insert or update genres. genres: list of (id, name)."""
+def batch_upsert_genres(genres: list[tuple[int, str]], session: Session | None = None) -> tuple[int, int]:
+	"""Insert or update genres. genres: list of (id, name).
+	   Returns (upserted, skipped) counts."""
 	if not genres:
-		return
+		return 0, 0
 	own_session = False
 	if session is None:
 		session = get_session()
 		own_session = True
+	
+	upserted = 0
+	skipped = 0
+	
 	try:
 		existing = {g.id: g for g in session.exec(select(Genre)).all()}
 		for gid, name in genres:
-			if gid in existing:
-				existing[gid].name = name
-			else:
-				session.add(Genre(id=gid, name=name))
-		if own_session:
+			try:
+				if gid in existing:
+					existing[gid].name = name
+					upserted += 1
+				else:
+					session.add(Genre(id=gid, name=name))
+					upserted += 1
+			except (ValueError, ValidationError, TypeError) as e:
+				skipped += 1
+				logger.warning(f"Skipped genre (id={gid}, name={name}): {str(e)}")
+				continue
+		if upserted > 0 and own_session:
 			session.commit()
+		if skipped > 0:
+			logger.info(f"Batch upserted {upserted} genres, skipped {skipped} with validation errors")
+		return upserted, skipped
 	finally:
 		if own_session:
 			session.close()
 
 
-def batch_upsert_items(items: list[tuple], session: Session | None = None) -> None:
+def batch_upsert_items(items: list[tuple], session: Session | None = None) -> tuple[int, int]:
 	"""
 	Insert or update items. items: list of (title, item_type, igdb_id, igdb_cover_image_id).
 	Updates igdb_cover_image_id only when new value is valid (not null/empty/'0').
+	Returns (inserted, skipped) counts.
 	"""
 	if not items:
-		return
+		return 0, 0
 	own_session = False
 	if session is None:
 		session = get_session()
 		own_session = True
+	
+	inserted = 0
+	skipped = 0
+	
 	try:
 		igdb_ids = [r[2] for r in items]
 		existing = {i.igdb_id: i for i in session.exec(select(Item).where(Item.igdb_id.in_(igdb_ids))).all() if i.igdb_id is not None}
 		for title, item_type, igdb_id, cover_id in items:
-			item_type_val = ItemType(item_type) if isinstance(item_type, str) else item_type
-			if igdb_id in existing:
-				obj = existing[igdb_id]
-				obj.title = title
-				if cover_id and str(cover_id).strip() not in ("", "0"):
-					obj.igdb_cover_image_id = str(cover_id).strip()
-			else:
-				session.add(Item(title=title, item_type=item_type_val, igdb_id=igdb_id, igdb_cover_image_id=cover_id))
-		if own_session:
+			try:
+				item_type_val = ItemType(item_type) if isinstance(item_type, str) else item_type
+				normalized_title = normalize_match_title(title or "")
+				if igdb_id in existing:
+					obj = existing[igdb_id]
+					obj.title = title
+					obj.norm_title = normalized_title
+					if cover_id and str(cover_id).strip() not in ("", "0"):
+						obj.igdb_cover_image_id = str(cover_id).strip()
+					inserted += 1
+				else:
+					session.add(
+						Item(
+							title=title,
+							norm_title=normalized_title,
+							item_type=item_type_val,
+							igdb_id=igdb_id,
+							igdb_cover_image_id=cover_id,
+						)
+					)
+					inserted += 1
+			except (ValueError, ValidationError, TypeError) as e:
+				skipped += 1
+				logger.warning(f"Skipped item (igdb_id={igdb_id}, title={title}): {str(e)}")
+				continue
+		if inserted > 0 and own_session:
 			session.commit()
+		if skipped > 0:
+			logger.info(f"Batch upserted {inserted} items, skipped {skipped} with validation errors")
+		return inserted, skipped
+	finally:
+		if own_session:
+			session.close()
+
+
+def backfill_missing_item_norm_titles(session: Session | None = None) -> int:
+	"""Populate norm_title for items where it is null/empty."""
+	own_session = False
+	if session is None:
+		session = get_session()
+		own_session = True
+
+	updated = 0
+	try:
+		statement = select(Item).where(or_(Item.norm_title.is_(None), Item.norm_title == ""))
+		rows = session.exec(statement).all()
+		for row in rows:
+			row.norm_title = normalize_match_title(row.title or "")
+			updated += 1
+
+		if own_session and updated:
+			session.commit()
+		return updated
 	finally:
 		if own_session:
 			session.close()
@@ -473,23 +562,38 @@ def get_items_by_igdb_ids(igdb_ids: list[int], session: Session | None = None) -
 			session.close()
 
 
-def batch_upsert_item_genres(item_genres: list[tuple[int, int]], session: Session | None = None) -> None:
-	"""Insert item-genre relationships. item_genres: list of (item_id, genre_id). No-op on duplicate."""
+def batch_upsert_item_genres(item_genres: list[tuple[int, int]], session: Session | None = None) -> tuple[int, int]:
+	"""Insert item-genre relationships. item_genres: list of (item_id, genre_id). No-op on duplicate.
+		Returns (inserted, skipped) counts.
+	"""
 	if not item_genres:
-		return
+		return 0, 0
 	own_session = False
 	if session is None:
 		session = get_session()
 		own_session = True
+	
+	inserted = 0
+	skipped = 0
+	
 	try:
 		item_ids = list({i for i, _ in item_genres})
 		existing = {(ig.item_id, ig.genre_id) for ig in session.exec(select(ItemGenre).where(ItemGenre.item_id.in_(item_ids))).all()}
 		for item_id, genre_id in item_genres:
-			if (item_id, genre_id) not in existing:
-				session.add(ItemGenre(item_id=item_id, genre_id=genre_id))
-				existing.add((item_id, genre_id))
-		if own_session:
+			try:
+				if (item_id, genre_id) not in existing:
+					session.add(ItemGenre(item_id=item_id, genre_id=genre_id))
+					existing.add((item_id, genre_id))
+					inserted += 1
+			except (ValueError, ValidationError, TypeError) as e:
+				skipped += 1
+				logger.warning(f"Skipped genre link (item_id={item_id}, genre_id={genre_id}): {str(e)}")
+				continue
+		if inserted > 0 and own_session:
 			session.commit()
+		if skipped > 0:
+			logger.info(f"Batch upserted {inserted} genre links, skipped {skipped} with validation errors")
+		return inserted, skipped
 	finally:
 		if own_session:
 			session.close()

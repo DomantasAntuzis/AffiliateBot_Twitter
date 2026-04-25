@@ -3,16 +3,15 @@ Deals matching service
 Matches affiliate products with Steam top sellers
 """
 import csv
-import sys
-import os
+
 import re
 import random
-import json
 
 import config
 from utils.logger import logger
 from utils.helpers import normalize_title
 from database.queries.steam import get_steam_topsellers
+from services.itad_service import enrich_deals_with_itad
 
 
 def find_matching_deals(products_list=None):
@@ -84,6 +83,8 @@ def find_matching_deals(products_list=None):
         
         logger.info(f"Found {len(deals)} matching deals")
 
+        # Enrich prices from ITAD for GamersGate, GOG, and IndieGala offers
+        deals = enrich_deals_with_itad(deals)
 
         sorted_deals = []
         different_sources = []
@@ -99,21 +100,11 @@ def find_matching_deals(products_list=None):
         for group in sorted_deals:
             random.shuffle(group)
 
-        with open("sorted_deals.json", "w", encoding="utf-8") as f:
-            json.dump(sorted_deals, f, indent=4)
-
         return sorted_deals
 
     except Exception as e:
-        logger.error(f"Error finding deals: {e}")
+        logger.error(f"Error finding deals: {e}", exc_info=True)
         return []
-
-def _get_deal_price(p_row, distributor):
-    # CSV columns: PROGRAM_NAME, ID, TITLE, LINK, IMAGE_LINK, AVAILABILITY, PRICE, SALE_PRICE, DISCOUNT
-    if distributor == "GamersGate.com":
-        return p_row[6]  # Use PRICE
-    else:
-        return p_row[7]  # Use SALE_PRICE
 
 
 def _parse_price(price_str):
@@ -121,6 +112,6 @@ def _parse_price(price_str):
         # Remove currency symbols and text, keep only numbers and decimal point
         price_clean = re.sub(r'[^\d.]', '', str(price_str))
         return float(price_clean)
-    except:
+    except (TypeError, ValueError):
         return 0.0
 

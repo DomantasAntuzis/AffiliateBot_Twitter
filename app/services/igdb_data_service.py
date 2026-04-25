@@ -12,12 +12,14 @@ from database.queries.items import (
     get_distinct_item_ids_with_genres,
     batch_upsert_genres,
     batch_upsert_items,
+    backfill_missing_item_norm_titles,
     get_items_by_igdb_ids,
     batch_upsert_item_genres,
     get_items_with_igdb_cover_for_download,
 )
 from utils.logger import logger
 from services.image_cache_service import download_igdb_image, is_image_cached
+from services.steam_service import reconcile_topsellers_item_ids
 
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
@@ -76,7 +78,8 @@ def fetch_all_genres():
             break
 
         genre_tuples = [(g['id'], g['name']) for g in genres_batch]
-        batch_upsert_genres(genre_tuples)
+        upserted, skipped = batch_upsert_genres(genre_tuples)
+        print(f"Batch upserted {upserted} genres, skipped {skipped}")
         batch_count += 1
 
         offset += limit
@@ -146,8 +149,8 @@ def fetch_all_igdb_games():
                     igdb_ids_to_query.append(game["id"])
 
                 try:
-                    batch_upsert_items(items_to_insert, session=session)
-                    print(f"Batch inserted {len(items_to_insert)} games")
+                    inserted, skipped = batch_upsert_items(items_to_insert, session=session)
+                    print(f"Batch inserted {inserted} games, skipped {skipped}")
 
                     igdb_to_item_map = get_items_by_igdb_ids(igdb_ids_to_query, session=session)
 
@@ -171,8 +174,8 @@ def fetch_all_igdb_games():
                             items_with_genres.add(item_id)
 
                     if genre_inserts:
-                        batch_upsert_item_genres(genre_inserts, session=session)
-                        print(f"Batch inserted {len(genre_inserts)} genre relationships")
+                        g_inserted, g_skipped = batch_upsert_item_genres(genre_inserts, session=session)
+                        print(f"Batch inserted {g_inserted} genre relationships, skipped {g_skipped}")
 
                     session.commit()
                     print(f"Committed batch {batch_count + 1}")
@@ -202,6 +205,19 @@ def fetch_all_igdb_games():
                 break
 
     logger.info(f"Finished fetch_all_igdb_games(). Total games fetched: {len(all_games)}")
+
+    try:
+        updated_items = backfill_missing_item_norm_titles()
+        logger.info(f"Backfilled missing items.norm_title values: {updated_items} row(s)")
+    except Exception as e:
+        logger.error(f"Failed to backfill items.norm_title values: {e}")
+
+    try:
+        updated = reconcile_topsellers_item_ids(only_null=True)
+        logger.info(f"Post-IGDB topsellers reconciliation done: {updated} rows updated")
+    except Exception as e:
+        logger.error(f"Failed to reconcile topsellers after IGDB refresh: {e}")
+
     return all_games
 
 def download_igdb_images_for_items():
