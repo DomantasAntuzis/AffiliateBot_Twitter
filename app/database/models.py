@@ -34,7 +34,7 @@ class Item(SQLModel, table=True):
         sa_type=SQLModelEnum(ItemType, values_callable=lambda x: [e.value for e in x], native_enum=False)
     )
     igdb_id: int = Field(index=True)
-    igdb_cover_image_id: str = Field(max_length=255, index=True)
+    igdb_cover_image_id: str | None = Field(default=None, max_length=255, index=True)
 
 class Offer(SQLModel, table=True):
     __tablename__ = "offers"

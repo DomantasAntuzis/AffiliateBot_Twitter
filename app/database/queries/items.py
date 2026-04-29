@@ -486,12 +486,17 @@ def batch_upsert_items(items: list[tuple], session: Session | None = None) -> tu
 			try:
 				item_type_val = ItemType(item_type) if isinstance(item_type, str) else item_type
 				normalized_title = normalize_match_title(title or "")
+
+				normalized_cover = str(cover_id).strip if cover_id else None
+				if normalized_cover in ("", "0"):
+					normalized_cover = none
+
 				if igdb_id in existing:
 					obj = existing[igdb_id]
 					obj.title = title
 					obj.norm_title = normalized_title
-					if cover_id and str(cover_id).strip() not in ("", "0"):
-						obj.igdb_cover_image_id = str(cover_id).strip()
+					if normalized_cover:
+						obj.igdb_cover_image_id = normalized_cover
 					inserted += 1
 				else:
 					session.add(
@@ -500,7 +505,7 @@ def batch_upsert_items(items: list[tuple], session: Session | None = None) -> tu
 							norm_title=normalized_title,
 							item_type=item_type_val,
 							igdb_id=igdb_id,
-							igdb_cover_image_id=cover_id,
+							igdb_cover_image_id=normalized_cover,
 						)
 					)
 					inserted += 1

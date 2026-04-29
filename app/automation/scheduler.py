@@ -192,9 +192,3 @@ def monthly_igdb_data_collection():
         import traceback
 
         traceback.print_exc()
-
-
-def check_and_run_monthly_igdb():
-    today = datetime.datetime.now()
-    if today.day == 1:
-        monthly_igdb_data_collection()

@@ -20,6 +20,13 @@ from urllib.parse import urlparse, urlencode, parse_qs, urlunparse, urljoin
 import config
 from utils.logger import logger
 
+from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -507,18 +514,21 @@ def fetch_gog_deals(country: str, currency: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Public: fetch all current IndieGala deals (replaces Selenium scraping)
+
+# ---------------------------------------------------------------------------
+# Public: fetch all current IndieGala deals by scraping the on-sale page
 # ---------------------------------------------------------------------------
 
-_INDIEGALA_SHOP_ID = 42
 _INDIEGALA_AFFILIATE_REF = "mzvkywq"
+_INDIEGALA_ON_SALE_URL = "https://www.indiegala.com/games/on-sale"
+_INDIEGALA_BLOCKED_URLS = ["*.css", "*.woff", "*.woff2", "*.ttf", "*.otf", "*.map"]
 
 # Preferred asset keys in order of preference
 _ASSET_KEYS = ("banner400", "banner600", "banner300", "banner145")
 
 
 def _add_affiliate_ref(url: str) -> str:
-    """Append ?ref=mzvkywq (or &ref=) to a store URL."""
+    """Append or replace ref=mzvkywq on a store URL."""
     if not url:
         return url
     parsed = urlparse(url)
@@ -528,112 +538,172 @@ def _add_affiliate_ref(url: str) -> str:
     return urlunparse(parsed._replace(query=new_query))
 
 
-def fetch_indiegala_deals(country: str, currency: str) -> list[dict]:
-    """
-    Fetch all current IndieGala deals via ITAD's /deals/v2 endpoint.
-    """
-    key = _api_key()
-    if not key:
-        logger.warning("ITAD: ITAD_API_KEY not configured – IndieGala list will be empty")
-        return []
+def _build_indiegala_driver():
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-software-rasterizer")
+    options.page_load_strategy = "eager"
+    options.add_experimental_option(
+        "prefs",
+        {
+            "profile.managed_default_content_settings.stylesheets": 2,
+            "profile.managed_default_content_settings.images": 2,
+            "profile.managed_default_content_settings.fonts": 2,
+        },
+    )
 
-    if country is None:
-        country = getattr(config, "ITAD_COUNTRY", "US")
-
-    session = requests.Session()
-    products: list[dict] = []
-    offset = 0
-    limit = 200  # max allowed by ITAD API (integer [ 1 .. 200 ])
+    driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(30)
 
     try:
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": _INDIEGALA_BLOCKED_URLS})
+    except Exception as exc:
+        logger.debug(f"IndieGala: could not set blocked URLs: {exc}")
+
+    return driver
+
+
+def _extract_indiegala_product_id(href: str) -> str:
+    path_parts = [part for part in urlparse(href).path.split("/") if part]
+    if path_parts:
+        return path_parts[-1]
+    return href.rsplit("/", 1)[-1] if href else "unknown"
+
+
+def _scrape_indiegala_page(driver) -> list[dict]:
+    products: list[dict] = []
+    cards = driver.find_elements(By.CSS_SELECTOR, "div.main-list-results-item-margin")
+
+    for card in cards:
+        try:
+            link_candidates = card.find_elements(By.CSS_SELECTOR, "h3 a[href*='/store/game/']")
+            if not link_candidates:
+                link_candidates = card.find_elements(By.CSS_SELECTOR, "figure a[href*='/store/game/']")
+            if not link_candidates:
+                continue
+
+            link_el = link_candidates[0]
+            href = (link_el.get_attribute("href") or "").strip()
+            title = (link_el.text or link_el.get_attribute("title") or "").strip()
+            if not href or not title:
+                continue
+
+            old_price = ""
+            new_price = ""
+            discount = ""
+
+            old_nodes = card.find_elements(By.CSS_SELECTOR, ".main-list-results-item-price-old")
+            if old_nodes:
+                old_price = (old_nodes[0].text or "").strip()
+
+            new_nodes = card.find_elements(By.CSS_SELECTOR, ".main-list-results-item-price-new")
+            if new_nodes:
+                new_price = (new_nodes[0].text or "").strip()
+
+            discount_nodes = card.find_elements(By.CSS_SELECTOR, ".main-list-results-item-discount")
+            if discount_nodes:
+                discount = (discount_nodes[0].text or "").strip().lstrip("-")
+
+            price_value = old_price or new_price
+            sale_value = new_price or old_price
+            if not price_value or not sale_value:
+                continue
+
+            products.append(
+                {
+                    "PROGRAM_NAME": "IndieGala",
+                    "ID": f"IG-{_extract_indiegala_product_id(href)}",
+                    "TITLE": title,
+                    "LINK": _add_affiliate_ref(href),
+                    "IMAGE_LINK": "",
+                    "AVAILABILITY": "in stock",
+                    "PRICE": price_value,
+                    "SALE_PRICE": sale_value,
+                    "DISCOUNT": discount,
+                }
+            )
+        except Exception as exc:
+            logger.debug(f"IndieGala: skipping card – {exc}")
+
+    return products
+
+
+def fetch_indiegala_deals(country: str, currency: str) -> list[dict]:
+    """
+    Scrape all current IndieGala deals from the on-sale page.
+    """
+    products: list[dict] = []
+    driver = None
+    seen_links: set[str] = set()
+
+    try:
+        driver = _build_indiegala_driver()
+        wait = WebDriverWait(driver, 20)
+        driver.get(_INDIEGALA_ON_SALE_URL)
+        wait.until(
+            lambda d: len(
+                d.find_elements(By.CSS_SELECTOR, "div.main-list-results-item-margin h3 a[href*='/store/game/']")
+            ) > 0
+        )
+
         while True:
             try:
-                resp = session.get(
-                    f"{ITAD_BASE_URL}/deals/v2",
-                    params={
-                        "key": key,
-                        "shops": _INDIEGALA_SHOP_ID,
-                        "country": country,
-                        "limit": limit,
-                        "offset": offset,
-                        "sort": "-cut",   # ITAD sort: prefix '-' = descending (highest discount first)
-                    },
-                    timeout=20,
+                page_products = _scrape_indiegala_page(driver)
+                added_count = 0
+                for product in page_products:
+                    link = product.get("LINK", "")
+                    if not link or link in seen_links:
+                        continue
+                    seen_links.add(link)
+                    products.append(product)
+                    added_count += 1
+
+                logger.info(
+                    f"IndieGala Selenium scrape: collected {added_count} products on current page (total {len(products)})"
                 )
 
-                if resp.status_code == 429:
-                    logger.warning("ITAD: rate-limit on deals endpoint – sleeping 5 s")
-                    time.sleep(5)
-                    continue
+                next_buttons = driver.find_elements(By.CSS_SELECTOR, "a.prev-next")
+                next_button = None
+                for candidate in next_buttons:
+                    if candidate.find_elements(By.CSS_SELECTOR, "i.fa-angle-right"):
+                        next_button = candidate
+                        break
 
-                if resp.status_code != 200:
-                    logger.warning(
-                        f"ITAD deals API returned {resp.status_code}: {resp.text[:200]}"
-                    )
+                if not next_button:
                     break
 
-                data = resp.json()
-                entries = data.get("list", [])
-                if not entries:
-                    break
+                current_cards = driver.find_elements(By.CSS_SELECTOR, "div.main-list-results-item-margin")
+                first_card = current_cards[0] if current_cards else None
 
-                for entry in entries:
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
+                driver.execute_script("arguments[0].click();", next_button)
+
+                if first_card is not None:
                     try:
-                        title = (entry.get("title") or "").strip()
-                        if not title:
-                            continue
-
-                        deal = entry.get("deal") or {}
-                        price_block = deal.get("price") or {}
-                        regular_block = deal.get("regular") or {}
-                        cut = deal.get("cut") or 0
-                        store_url = (deal.get("url") or "").strip()
-
-                        sale_amount = price_block.get("amount")
-                        regular_amount = regular_block.get("amount")
-
-                        if not sale_amount or not store_url:
-                            continue
-
-                        # Use regular price as list price; fall back to sale if absent
-                        list_price = regular_amount if regular_amount else sale_amount
-
-                        # Pick best available banner image from ITAD assets
-                        assets = entry.get("assets") or {}
-                        image_url = ""
-                        for key_name in _ASSET_KEYS:
-                            candidate = assets.get(key_name, "")
-                            if candidate:
-                                image_url = candidate
-                                break
-
-                        products.append({
-                            "PROGRAM_NAME": "IndieGala",
-                            "ID": f"ITAD-IG-{(entry.get('id') or title.replace(' ', '-'))[:50]}",
-                            "TITLE": title,
-                            "LINK": _add_affiliate_ref(store_url),
-                            "IMAGE_LINK": image_url,
-                            "AVAILABILITY": "in stock",
-                            "PRICE": str(round(float(list_price), 2)),
-                            "SALE_PRICE": str(round(float(sale_amount), 2)),
-                            "DISCOUNT": str(int(cut)) if cut else "",
-                        })
-
-                    except Exception as exc:
-                        logger.debug(f"ITAD: skipping IndieGala entry – {exc}")
-
-                if not data.get("hasMore", False):
-                    break
-
-                # Use the API-provided cursor for the next page
-                offset = data.get("nextOffset", offset + len(entries))
+                        wait.until(EC.staleness_of(first_card))
+                    except TimeoutException:
+                        wait.until(
+                            lambda d: len(
+                                d.find_elements(By.CSS_SELECTOR, "div.main-list-results-item-margin h3 a[href*='/store/game/']")
+                            ) > 0
+                        )
 
             except Exception as exc:
-                logger.warning(f"ITAD IndieGala deals page error: {exc}")
+                logger.warning(f"IndieGala Selenium scrape page error: {exc}")
                 break
 
     finally:
-        session.close()
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
-    logger.info(f"ITAD: fetched {len(products)} IndieGala deals")
+    logger.info(f"IndieGala Selenium scrape: fetched {len(products)} deals")
     return products
+

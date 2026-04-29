@@ -21,9 +21,9 @@ TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
 
 DB_HOST = "localhost"
 
-DB_USER = "root"
+DB_USER = "website_admin"
 
-DB_PASSWORD = ""
+DB_PASSWORD = "Geras123!"
 
 DB_NAME = "affiliate_marketing"
 
@@ -69,8 +69,7 @@ STEAM_LANGUAGE = "en"
 # ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # CJ Affiliate
-# CJ_DATA_DATE = "TODAY"
-CJ_DATA_DATE = "YESTERDAY"
+CJ_DATA_DATE = "TODAY"
 
 # IsThereAnyDeal (ITAD) API
 # Register at https://isthereanydeal.com/dev/app/ to get your API key

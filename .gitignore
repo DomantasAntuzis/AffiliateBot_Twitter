@@ -4,4 +4,4 @@ __pycache__/
 posted_games.txt
 test/
 data/
-logs/
+logs/.venv/
